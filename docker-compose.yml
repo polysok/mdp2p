@@ -1,0 +1,24 @@
+services:
+  tracker:
+    build: .
+    ports:
+      - "1707:1707"
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: ["--port", "1707", "--redis-url", "redis://redis:6379"]
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  redis_data:
