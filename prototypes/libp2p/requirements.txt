@@ -1,0 +1,4 @@
+libp2p>=0.2.10
+trio>=0.27.0
+multiaddr>=0.0.9
+cryptography>=42.0.0
