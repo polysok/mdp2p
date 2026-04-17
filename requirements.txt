@@ -1,2 +1,5 @@
 cryptography>=42.0.0
 redis>=5.0.0
+libp2p>=0.6.0
+trio>=0.27.0
+multiaddr>=0.0.9

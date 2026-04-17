@@ -302,6 +302,78 @@ def verify_register_proof(
         return False, f"Verification error: {e}"
 
 
+def compute_manifest_ref(manifest: dict) -> str:
+    """Hex SHA-256 of the canonical JSON of a signed manifest.
+
+    Used as the stable content identifier in the naming layer: the author
+    publishes (uri, public_key, manifest_ref) and seeders serve the bundle
+    whose manifest hashes to exactly that ref.
+    """
+    return hashlib.sha256(_canonical_json(manifest)).hexdigest()
+
+
+def build_name_record(
+    uri: str,
+    author: str,
+    public_key_b64: str,
+    manifest_ref: str,
+    timestamp: Optional[int] = None,
+) -> dict:
+    """Build a naming record (unsigned). Pair with sign_name_record()."""
+    return {
+        "uri": uri,
+        "author": author,
+        "public_key": public_key_b64,
+        "manifest_ref": manifest_ref,
+        "timestamp": timestamp if timestamp is not None else int(time.time()),
+    }
+
+
+def sign_name_record(record: dict, private_key: Ed25519PrivateKey) -> str:
+    """Sign a naming record. Returns base64 signature over canonical JSON.
+
+    The record's public_key must match the signing key.
+    """
+    expected_pub = public_key_to_b64(private_key.public_key())
+    if record.get("public_key") != expected_pub:
+        raise ValueError("record public_key does not match signing private key")
+    signature = private_key.sign(_canonical_json(record))
+    return base64.b64encode(signature).decode()
+
+
+def verify_name_record(
+    record: dict,
+    signature_b64: str,
+    max_drift: Optional[int] = MAX_TIMESTAMP_DRIFT_SECONDS,
+) -> Tuple[bool, str]:
+    """Verify a naming record against its embedded public key.
+
+    Returns (is_valid, error_message). The record is self-contained: the
+    signature is checked against record["public_key"]. max_drift=None skips
+    the drift check (used for federation or replay scenarios).
+    """
+    required = ("uri", "author", "public_key", "manifest_ref", "timestamp")
+    missing = [field for field in required if field not in record]
+    if missing:
+        return False, f"missing fields: {', '.join(missing)}"
+
+    try:
+        if max_drift is not None:
+            now = int(time.time())
+            drift = abs(now - int(record["timestamp"]))
+            if drift > max_drift:
+                return False, f"timestamp drift too large ({drift}s)"
+
+        pub_key = b64_to_public_key(record["public_key"])
+        signature = base64.b64decode(signature_b64)
+        pub_key.verify(signature, _canonical_json(record))
+        return True, ""
+    except InvalidSignature:
+        return False, "invalid signature"
+    except Exception as e:
+        return False, f"verification error: {e}"
+
+
 def save_bundle(site_dir: str, manifest: dict, signature: str) -> None:
     """Save the manifest and signature to the site directory."""
     site_path = Path(site_dir)
