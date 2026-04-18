@@ -22,11 +22,12 @@ COPY --from=builder /install /usr/local
 
 WORKDIR /app
 
-COPY --chown=mdp2p:mdp2p bundle.py protocol.py tracker.py pinstore.py ./
+COPY --chown=mdp2p:mdp2p \
+    bundle.py naming.py peer.py peer_zero.py pinstore.py wire.py ./
 
 EXPOSE 1707
 
 USER mdp2p
 
-ENTRYPOINT ["python", "tracker.py"]
-CMD ["--port", "1707"]
+# No ENTRYPOINT — docker-compose sets `command: python peer_zero.py ...`
+# so the same image can be reused for different roles if needed.

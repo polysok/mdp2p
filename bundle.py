@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import stat
 import time
 from pathlib import Path
@@ -32,6 +33,30 @@ MAX_BUNDLE_FILES = 1000
 MAX_BUNDLE_TOTAL_SIZE = 50 * 1024 * 1024  # 50 MB
 MAX_PATH_DEPTH = 10
 DEFAULT_TTL_SECONDS = 30 * 24 * 3600  # 30 days
+
+MAX_URI_LENGTH = 255
+_VALID_URI_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+
+
+def validate_uri(uri: str) -> str:
+    """Validate and return a safe URI string.
+
+    Accepted characters: alphanumeric, dots, hyphens, underscores.
+    Rejects empty strings, path traversal, path separators, and excessive length.
+    """
+    if not uri or not isinstance(uri, str):
+        raise ValueError("URI must be a non-empty string")
+    if len(uri) > MAX_URI_LENGTH:
+        raise ValueError(f"URI too long ({len(uri)} chars, max {MAX_URI_LENGTH})")
+    if "/" in uri or "\\" in uri or "\x00" in uri:
+        raise ValueError(f"URI contains forbidden characters: {uri!r}")
+    if uri in (".", "..") or ".." in uri:
+        raise ValueError(f"URI contains path traversal: {uri!r}")
+    if not _VALID_URI_RE.match(uri):
+        raise ValueError(
+            f"URI contains invalid characters (allowed: a-z, 0-9, '.', '-', '_'): {uri!r}"
+        )
+    return uri
 
 
 def make_key_name(author: str, uri: str) -> str:

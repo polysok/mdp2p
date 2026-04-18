@@ -55,6 +55,7 @@ from bundle import (
     sign_manifest,
     sign_name_record,
     validate_path,
+    validate_uri,
     verify_files,
     verify_manifest,
     verify_name_record,
@@ -77,7 +78,6 @@ from naming import (
 )
 from naming import load_or_create_peer_seed
 from pinstore import PinStatus, check_pin, pin_key, update_pin_last_seen
-from protocol import validate_uri
 from wire import recv_framed_json, send_framed_json
 
 logger = logging.getLogger("mdp2p.peer")

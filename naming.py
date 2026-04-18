@@ -36,8 +36,7 @@ from libp2p.custom_types import TProtocol
 from libp2p.network.stream.net_stream import INetStream
 from libp2p.peer.peerinfo import PeerInfo
 
-from bundle import verify_name_record
-from protocol import validate_uri
+from bundle import validate_uri, verify_name_record
 from wire import recv_framed_json, send_framed_json
 
 logger = logging.getLogger("mdp2p.naming")
