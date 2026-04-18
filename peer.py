@@ -43,6 +43,7 @@ from bundle import (
     b64_to_public_key,
     build_name_record,
     bundle_to_dict,
+    compute_content_key,
     compute_manifest_ref,
     create_manifest,
     dict_to_bundle,
@@ -58,6 +59,8 @@ from bundle import (
     verify_manifest,
     verify_name_record,
 )
+from libp2p.kad_dht.kad_dht import DHTMode, KadDHT
+from libp2p.tools.async_service import background_trio_service
 from naming import (
     client_register as naming_register,
     client_resolve as naming_resolve,
@@ -84,12 +87,14 @@ class Peer:
         data_dir: str = DEFAULT_DATA_DIR,
         naming_info: Optional[PeerInfo] = None,
         pinstore_path: str = DEFAULT_PINSTORE,
+        dht: Optional[KadDHT] = None,
     ):
         self.host = host
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.naming_info = naming_info
         self.pinstore_path = pinstore_path
+        self.dht = dht
         self.sites: dict[str, str] = {}
 
     def attach(self) -> None:
@@ -165,25 +170,72 @@ class Peer:
         logger.info("naming registered: %s → %s", uri, manifest_ref[:12])
 
         self.sites[uri] = site_dir_resolved
+        await self.announce(uri)
         return manifest, signature
+
+    # ─── DHT announce ────────────────────────────────────────────────
+
+    async def announce(self, uri: str) -> bool:
+        """Advertise this peer as a provider for `uri` in the DHT.
+
+        Requires `dht` to be set and at least one peer in the routing table.
+        Returns True on successful advertisement.
+        """
+        if self.dht is None:
+            logger.debug("announce skipped: no DHT configured")
+            return False
+        if uri not in self.sites:
+            logger.warning("announce called for unknown uri %s", uri)
+            return False
+        manifest, _ = load_bundle(self.sites[uri])
+        author_pub_b64 = manifest.get("public_key", "")
+        if not author_pub_b64:
+            logger.warning("manifest has no public_key for uri %s", uri)
+            return False
+        key = compute_content_key(uri, author_pub_b64)
+        try:
+            ok = await self.dht.provide(key)
+            logger.info("dht.provide(%s): %s", uri, "ok" if ok else "failed")
+            return ok
+        except Exception as e:
+            logger.warning("dht.provide for %s raised: %s", uri, e)
+            return False
+
+    async def find_providers(self, uri: str, author_pub_b64: str) -> list[str]:
+        """Return multiaddr strings of peers advertising `uri` in the DHT."""
+        if self.dht is None:
+            return []
+        key = compute_content_key(uri, author_pub_b64)
+        try:
+            providers = await self.dht.find_providers(key)
+        except Exception as e:
+            logger.warning("dht.find_providers for %s raised: %s", uri, e)
+            return []
+        self_id = self.host.get_id()
+        addrs: list[str] = []
+        for info in providers:
+            if info.peer_id == self_id:
+                continue
+            for addr in info.addrs:
+                addrs.append(f"{addr}/p2p/{info.peer_id.to_string()}")
+        return addrs
 
     # ─── Downloading (client) ────────────────────────────────────────
 
     async def fetch_site(
         self,
         uri: str,
-        seeder_addrs: list[str],
+        seeder_addrs: Optional[list[str]] = None,
     ) -> bool:
         """Resolve via naming, download from a seeder, verify, and seed.
 
-        `seeder_addrs` must be a list of full libp2p multiaddrs. In Phase 3
-        callers can leave this empty and let DHT lookup fill it in.
+        If `seeder_addrs` is None or empty, the DHT is queried for providers.
+        Passing an explicit list bypasses discovery (useful for tests or
+        bootstrap situations where the DHT is unreachable).
         """
         validate_uri(uri)
         if self.naming_info is None:
             raise ValueError("cannot fetch without a naming server configured")
-        if not seeder_addrs:
-            raise ValueError("no seeders provided (DHT discovery arrives in Phase 3)")
 
         resp = await naming_resolve(self.host, self.naming_info, uri)
         if resp.get("type") != "record":
@@ -200,6 +252,15 @@ class Peer:
         author_pub_b64 = record["public_key"]
         expected_ref = record["manifest_ref"]
         record_author = record.get("author", "unknown")
+
+        if not seeder_addrs:
+            seeder_addrs = await self.find_providers(uri, author_pub_b64)
+            if not seeder_addrs:
+                logger.error(
+                    "no providers found for %s (DHT returned empty)", uri
+                )
+                return False
+            logger.info("DHT lookup for %s: %d provider(s)", uri, len(seeder_addrs))
 
         pinstore_data = None
         try:
@@ -262,6 +323,8 @@ class Peer:
             manifest["file_count"],
             manifest["total_size"],
         )
+        # Join the swarm: announce ourselves as a provider.
+        await self.announce(uri)
         return True
 
     async def _try_download_from_seeders(
@@ -403,12 +466,15 @@ async def run_peer(
     peer_key_path: Optional[str] = None,
     naming_info: Optional[PeerInfo] = None,
     pinstore_path: str = DEFAULT_PINSTORE,
+    bootstrap_multiaddrs: Optional[list[str]] = None,
+    enable_dht: bool = True,
 ) -> AsyncIterator[Peer]:
-    """Run a Peer with a libp2p host, yielding the Peer to the caller.
+    """Run a Peer with a libp2p host + Kademlia DHT, yielding the Peer.
 
-    The host listens on `port` (0 = random), loads/creates a persistent peer
-    key at `peer_key_path` (defaults to <data_dir>/peer.key), and attaches
-    the bundle protocol handler.
+    - `bootstrap_multiaddrs` : peers dialed at startup; they seed the DHT
+      routing table so provide/find_providers have propagation targets.
+    - `enable_dht=False` disables the DHT entirely (useful for tests that
+      wire peers manually without discovery).
     """
     data_path = Path(data_dir)
     data_path.mkdir(parents=True, exist_ok=True)
@@ -418,16 +484,71 @@ async def run_peer(
     host = new_host(key_pair=create_new_key_pair(seed))
     listen = [multiaddr.Multiaddr(f"/ip4/0.0.0.0/tcp/{port}")]
 
+    dht = KadDHT(host, DHTMode.SERVER) if enable_dht else None
+
+    async def _bootstrap_dht() -> None:
+        if dht is None:
+            return
+        for maddr in bootstrap_multiaddrs or []:
+            try:
+                info = info_from_p2p_addr(multiaddr.Multiaddr(maddr))
+                host.get_peerstore().add_addrs(info.peer_id, info.addrs, 3600)
+                await host.connect(info)
+                await dht.routing_table.add_peer(info.peer_id)
+                logger.info("bootstrapped DHT via %s", info.peer_id)
+            except Exception as e:
+                logger.warning("bootstrap to %s failed: %s", maddr, e)
+
     async with host.run(listen_addrs=listen), trio.open_nursery() as nursery:
         nursery.start_soon(host.get_peerstore().start_cleanup_task, 60)
-        peer = Peer(
-            host,
-            data_dir=data_dir,
-            naming_info=naming_info,
-            pinstore_path=pinstore_path,
-        )
-        peer.attach()
-        try:
-            yield peer
-        finally:
-            nursery.cancel_scope.cancel()
+
+        if dht is not None:
+            async with background_trio_service(dht):
+                peer = Peer(
+                    host,
+                    data_dir=data_dir,
+                    naming_info=naming_info,
+                    pinstore_path=pinstore_path,
+                    dht=dht,
+                )
+                peer.attach()
+                await _bootstrap_dht()
+                try:
+                    yield peer
+                finally:
+                    nursery.cancel_scope.cancel()
+        else:
+            peer = Peer(
+                host,
+                data_dir=data_dir,
+                naming_info=naming_info,
+                pinstore_path=pinstore_path,
+                dht=None,
+            )
+            peer.attach()
+            try:
+                yield peer
+            finally:
+                nursery.cancel_scope.cancel()
+
+
+async def link_peers_dht(*peers: Peer) -> None:
+    """Full-mesh the DHT routing tables of the given peers.
+
+    py-libp2p 0.6.0 doesn't auto-populate the routing table from inbound
+    connections, so peers that dial each other still need an explicit
+    add_peer call. This helper is mostly for tests and small deployments.
+    """
+    for a in peers:
+        for b in peers:
+            if a is b or a.dht is None or b.dht is None:
+                continue
+            b_id = b.host.get_id()
+            for addr in b.host.get_addrs():
+                a.host.get_peerstore().add_addrs(b_id, [addr], 3600)
+            try:
+                info = PeerInfo(b_id, list(b.host.get_addrs()))
+                await a.host.connect(info)
+            except Exception:
+                pass
+            await a.dht.routing_table.add_peer(b_id)

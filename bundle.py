@@ -302,6 +302,17 @@ def verify_register_proof(
         return False, f"Verification error: {e}"
 
 
+def compute_content_key(uri: str, public_key_b64: str) -> str:
+    """Stable DHT content key for a (uri, author) pair.
+
+    The key is stable across manifest versions, so the swarm of providers
+    stays coherent when the author publishes v2 — newer seeders simply
+    replace older ones, without forcing rediscovery.
+    """
+    digest = hashlib.sha256(f"{uri}:{public_key_b64}".encode("utf-8")).hexdigest()
+    return f"/mdp2p/{digest}"
+
+
 def compute_manifest_ref(manifest: dict) -> str:
     """Hex SHA-256 of the canonical JSON of a signed manifest.
 
