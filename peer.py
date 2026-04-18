@@ -26,7 +26,7 @@ host shutdown happens cleanly on exit.
 from __future__ import annotations
 
 import logging
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator, Optional
 
@@ -60,6 +60,16 @@ from bundle import (
     verify_name_record,
 )
 from libp2p.kad_dht.kad_dht import DHTMode, KadDHT
+from libp2p.relay.circuit_v2.config import RelayConfig, RelayRole
+from libp2p.relay.circuit_v2.dcutr import DCUtRProtocol
+from libp2p.relay.circuit_v2.discovery import RelayDiscovery
+from libp2p.relay.circuit_v2.protocol import (
+    PROTOCOL_ID as HOP_PROTOCOL_ID,
+    STOP_PROTOCOL_ID,
+    CircuitV2Protocol,
+)
+from libp2p.relay.circuit_v2.resources import RelayLimits
+from libp2p.relay.circuit_v2.transport import CircuitV2Transport
 from libp2p.tools.async_service import background_trio_service
 from naming import (
     client_register as naming_register,
@@ -78,6 +88,20 @@ DEFAULT_DATA_DIR = "./peer_data"
 DEFAULT_PINSTORE = str(Path.home() / ".mdp2p" / "known_keys.json")
 
 
+def _default_relay_limits() -> RelayLimits:
+    """Conservative limits for a public peer-zero running as a relay.
+
+    100 MiB/reservation and 10 concurrent circuits caps bandwidth so the
+    relay cannot be trivially abused as free bandwidth.
+    """
+    return RelayLimits(
+        duration=3600,
+        data=100 * 1024 * 1024,
+        max_circuit_conns=10,
+        max_reservations=20,
+    )
+
+
 class Peer:
     """Stateful wrapper around a libp2p host that serves and fetches bundles."""
 
@@ -88,6 +112,7 @@ class Peer:
         naming_info: Optional[PeerInfo] = None,
         pinstore_path: str = DEFAULT_PINSTORE,
         dht: Optional[KadDHT] = None,
+        relay_transport: Optional[CircuitV2Transport] = None,
     ):
         self.host = host
         self.data_dir = Path(data_dir)
@@ -95,6 +120,7 @@ class Peer:
         self.naming_info = naming_info
         self.pinstore_path = pinstore_path
         self.dht = dht
+        self.relay_transport = relay_transport
         self.sites: dict[str, str] = {}
 
     def attach(self) -> None:
@@ -116,8 +142,15 @@ class Peer:
 
     @property
     def addrs(self) -> list[str]:
-        peer_id = self.host.get_id().to_string()
-        return [f"{addr}/p2p/{peer_id}" for addr in self.host.get_addrs()]
+        peer_id_component = f"/p2p/{self.host.get_id().to_string()}"
+        result: list[str] = []
+        for addr in self.host.get_addrs():
+            s = str(addr)
+            if peer_id_component in s:
+                result.append(s)
+            else:
+                result.append(s + peer_id_component)
+        return result
 
     # ─── Publishing (author) ──────────────────────────────────────────
 
@@ -335,8 +368,18 @@ class Peer:
 
         async def try_one(idx: int, addr_str: str) -> None:
             try:
-                info = info_from_p2p_addr(multiaddr.Multiaddr(addr_str))
-                await self.host.connect(info)
+                maddr = multiaddr.Multiaddr(addr_str)
+                info = info_from_p2p_addr(maddr)
+                if "/p2p-circuit/" in addr_str and self.relay_transport is not None:
+                    # CircuitV2Transport needs the destination peer in the
+                    # peerstore to complete the dial, even though the circuit
+                    # address already carries the peer_id.
+                    self.host.get_peerstore().add_addrs(
+                        info.peer_id, [maddr], 3600
+                    )
+                    await self.relay_transport.dial(maddr)
+                else:
+                    await self.host.connect(info)
                 stream = await self.host.new_stream(info.peer_id, [BUNDLE_PROTOCOL])
                 try:
                     await send_framed_json(
@@ -463,26 +506,39 @@ async def _send_error(stream: INetStream, message: str) -> None:
 async def run_peer(
     data_dir: str = DEFAULT_DATA_DIR,
     port: int = 0,
+    listen_host: str = "0.0.0.0",
     peer_key_path: Optional[str] = None,
     naming_info: Optional[PeerInfo] = None,
     pinstore_path: str = DEFAULT_PINSTORE,
     bootstrap_multiaddrs: Optional[list[str]] = None,
     enable_dht: bool = True,
+    relay_mode: str = "none",
+    relay_multiaddrs: Optional[list[str]] = None,
 ) -> AsyncIterator[Peer]:
-    """Run a Peer with a libp2p host + Kademlia DHT, yielding the Peer.
+    """Run a Peer with a libp2p host, DHT, and optional Circuit Relay v2 stack.
 
     - `bootstrap_multiaddrs` : peers dialed at startup; they seed the DHT
       routing table so provide/find_providers have propagation targets.
     - `enable_dht=False` disables the DHT entirely (useful for tests that
       wire peers manually without discovery).
+    - `relay_mode` : one of
+        - "none" (default): no Circuit Relay services loaded
+        - "client": STOP + CLIENT roles. The peer can dial and accept
+          connections through a relay, and attempts DCUtR upgrades.
+        - "hop": full relay (HOP + STOP + CLIENT). For the peer-zero VPS.
+    - `relay_multiaddrs` : list of relay multiaddrs to dial at startup
+      (client mode only); RelayDiscovery will auto-reserve slots.
     """
+    if relay_mode not in ("none", "client", "hop"):
+        raise ValueError(f"relay_mode must be 'none', 'client' or 'hop', got {relay_mode!r}")
+
     data_path = Path(data_dir)
     data_path.mkdir(parents=True, exist_ok=True)
     key_path = peer_key_path or str(data_path / "peer.key")
 
     seed = load_or_create_peer_seed(key_path)
     host = new_host(key_pair=create_new_key_pair(seed))
-    listen = [multiaddr.Multiaddr(f"/ip4/0.0.0.0/tcp/{port}")]
+    listen = [multiaddr.Multiaddr(f"/ip4/{listen_host}/tcp/{port}")]
 
     dht = KadDHT(host, DHTMode.SERVER) if enable_dht else None
 
@@ -499,33 +555,69 @@ async def run_peer(
             except Exception as e:
                 logger.warning("bootstrap to %s failed: %s", maddr, e)
 
+    async def _connect_relays() -> None:
+        for maddr in relay_multiaddrs or []:
+            try:
+                info = info_from_p2p_addr(multiaddr.Multiaddr(maddr))
+                host.get_peerstore().add_addrs(info.peer_id, info.addrs, 3600)
+                await host.connect(info)
+                logger.info("connected to relay %s", info.peer_id)
+            except Exception as e:
+                logger.warning("relay connect to %s failed: %s", maddr, e)
+
     async with host.run(listen_addrs=listen), trio.open_nursery() as nursery:
         nursery.start_soon(host.get_peerstore().start_cleanup_task, 60)
 
-        if dht is not None:
-            async with background_trio_service(dht):
-                peer = Peer(
-                    host,
-                    data_dir=data_dir,
-                    naming_info=naming_info,
-                    pinstore_path=pinstore_path,
-                    dht=dht,
+        async with AsyncExitStack() as stack:
+            if dht is not None:
+                await stack.enter_async_context(background_trio_service(dht))
+
+            circuit_protocol: Optional[CircuitV2Protocol] = None
+            if relay_mode in ("client", "hop"):
+                limits = _default_relay_limits()
+                allow_hop = relay_mode == "hop"
+                circuit_protocol = CircuitV2Protocol(
+                    host, limits=limits, allow_hop=allow_hop
                 )
-                peer.attach()
-                await _bootstrap_dht()
-                try:
-                    yield peer
-                finally:
-                    nursery.cancel_scope.cancel()
-        else:
+                roles = RelayRole.STOP | RelayRole.CLIENT
+                if allow_hop:
+                    roles |= RelayRole.HOP
+                relay_config = RelayConfig(roles=roles, limits=limits)
+
+                host.set_stream_handler(
+                    HOP_PROTOCOL_ID, circuit_protocol._handle_hop_stream
+                )
+                host.set_stream_handler(
+                    STOP_PROTOCOL_ID, circuit_protocol._handle_stop_stream
+                )
+                await stack.enter_async_context(
+                    background_trio_service(circuit_protocol)
+                )
+
+                relay_transport = CircuitV2Transport(
+                    host, circuit_protocol, relay_config
+                )
+                if relay_mode == "client":
+                    discovery = RelayDiscovery(host, auto_reserve=True)
+                    relay_transport.discovery = discovery
+                    await stack.enter_async_context(background_trio_service(discovery))
+                    dcutr = DCUtRProtocol(host)
+                    await stack.enter_async_context(background_trio_service(dcutr))
+            else:
+                relay_transport = None
+
             peer = Peer(
                 host,
                 data_dir=data_dir,
                 naming_info=naming_info,
                 pinstore_path=pinstore_path,
-                dht=None,
+                dht=dht,
+                relay_transport=relay_transport,
             )
             peer.attach()
+            await _bootstrap_dht()
+            await _connect_relays()
+
             try:
                 yield peer
             finally:
