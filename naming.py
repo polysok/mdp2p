@@ -23,7 +23,6 @@ import json
 import logging
 import os
 import stat
-import struct
 import sys
 from pathlib import Path
 from typing import Optional
@@ -39,6 +38,7 @@ from libp2p.peer.peerinfo import PeerInfo
 
 from bundle import verify_name_record
 from protocol import validate_uri
+from wire import recv_framed_json, send_framed_json
 
 logger = logging.getLogger("mdp2p.naming")
 
@@ -49,36 +49,12 @@ DEFAULT_STORE_PATH = "./naming_data/records.json"
 DEFAULT_KEY_PATH = "./naming_data/peer.key"
 
 
-# ─── Length-prefixed JSON framing ─────────────────────────────────────
-
-async def _read_exact(stream: INetStream, n: int) -> Optional[bytes]:
-    buf = b""
-    while len(buf) < n:
-        chunk = await stream.read(n - len(buf))
-        if not chunk:
-            return None
-        buf += chunk
-    return buf
-
-
 async def send_json(stream: INetStream, obj: dict) -> None:
-    payload = json.dumps(obj, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    if len(payload) > MAX_MSG_SIZE:
-        raise ValueError(f"message too large: {len(payload)} bytes")
-    await stream.write(struct.pack("!I", len(payload)) + payload)
+    await send_framed_json(stream, obj, MAX_MSG_SIZE)
 
 
 async def recv_json(stream: INetStream) -> Optional[dict]:
-    header = await _read_exact(stream, 4)
-    if header is None:
-        return None
-    (length,) = struct.unpack("!I", header)
-    if length > MAX_MSG_SIZE:
-        return None
-    payload = await _read_exact(stream, length)
-    if payload is None:
-        return None
-    return json.loads(payload.decode("utf-8"))
+    return await recv_framed_json(stream, MAX_MSG_SIZE)
 
 
 # ─── Record store ─────────────────────────────────────────────────────

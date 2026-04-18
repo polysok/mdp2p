@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(sudo chown:*)",
-      "Bash(python -m pytest tests/ -v)"
+      "Bash(python -m pytest tests/ -v)",
+      "WebSearch",
+      "WebFetch(domain:py-libp2p.readthedocs.io)",
+      "Bash(curl -s https://raw.githubusercontent.com/libp2p/py-libp2p/main/examples/chat/chat.py)",
+      "Bash(curl -s https://raw.githubusercontent.com/libp2p/py-libp2p/main/examples/echo/echo.py)"
     ]
   }
 }

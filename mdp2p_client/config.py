@@ -1,13 +1,13 @@
 """
 MDP2P Client Config — Configuration management for the MDP2P client.
 
-Stores author identity, tracker settings, and local seeding data.
+Stores author identity, naming-server address, bootstrap peers, and local seeding data.
 """
 
 import json
 import os
 import shutil
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Optional
 
@@ -22,8 +22,8 @@ class ClientConfig:
     """Client configuration."""
 
     author: str
-    tracker_host: str = "localhost"
-    tracker_port: int = 1707
+    naming_multiaddr: str = ""  # full multiaddr of the naming server
+    bootstrap_multiaddrs: list[str] = field(default_factory=list)
     keys_dir: str = str(DEFAULT_CONFIG_DIR / "keys")
     data_dir: str = str(DEFAULT_DATA_DIR)
     port: int = 0
@@ -38,13 +38,18 @@ class ClientConfig:
 
     @classmethod
     def load(cls, path: Optional[Path] = None) -> Optional["ClientConfig"]:
-        """Load configuration from file. Returns None if not found."""
+        """Load configuration from file. Returns None if not found.
+
+        Silently drops unknown fields (e.g., legacy tracker_host/tracker_port
+        from the pre-migration 0.1.x config) so upgrade doesn't break.
+        """
         path = path or DEFAULT_CONFIG_FILE
         if not path.exists():
             return None
         with open(path) as f:
             data = json.load(f)
-        return cls(**data)
+        valid = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
+        return cls(**valid)
 
 
 @dataclass
