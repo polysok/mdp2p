@@ -26,6 +26,13 @@ WORKDIR /app
 COPY --chown=mdp2p:mdp2p \
     bundle.py naming.py peer.py peer_zero.py pinstore.py wire.py ./
 
+# Pre-create the data directory owned by the mdp2p user. When Docker
+# creates a named volume for the first time, it copies ownership/contents
+# from this mount point inside the image — so peer.key lands in a
+# writable location from the start.
+RUN mkdir -p /var/lib/mdp2p/peer_zero \
+    && chown -R mdp2p:mdp2p /var/lib/mdp2p
+
 EXPOSE 1707
 
 USER mdp2p
