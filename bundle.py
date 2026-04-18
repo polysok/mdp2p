@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import stat
 import time
 from pathlib import Path
@@ -32,6 +33,30 @@ MAX_BUNDLE_FILES = 1000
 MAX_BUNDLE_TOTAL_SIZE = 50 * 1024 * 1024  # 50 MB
 MAX_PATH_DEPTH = 10
 DEFAULT_TTL_SECONDS = 30 * 24 * 3600  # 30 days
+
+MAX_URI_LENGTH = 255
+_VALID_URI_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+
+
+def validate_uri(uri: str) -> str:
+    """Validate and return a safe URI string.
+
+    Accepted characters: alphanumeric, dots, hyphens, underscores.
+    Rejects empty strings, path traversal, path separators, and excessive length.
+    """
+    if not uri or not isinstance(uri, str):
+        raise ValueError("URI must be a non-empty string")
+    if len(uri) > MAX_URI_LENGTH:
+        raise ValueError(f"URI too long ({len(uri)} chars, max {MAX_URI_LENGTH})")
+    if "/" in uri or "\\" in uri or "\x00" in uri:
+        raise ValueError(f"URI contains forbidden characters: {uri!r}")
+    if uri in (".", "..") or ".." in uri:
+        raise ValueError(f"URI contains path traversal: {uri!r}")
+    if not _VALID_URI_RE.match(uri):
+        raise ValueError(
+            f"URI contains invalid characters (allowed: a-z, 0-9, '.', '-', '_'): {uri!r}"
+        )
+    return uri
 
 
 def make_key_name(author: str, uri: str) -> str:
@@ -300,6 +325,89 @@ def verify_register_proof(
         return False, "Invalid signature"
     except Exception as e:
         return False, f"Verification error: {e}"
+
+
+def compute_content_key(uri: str, public_key_b64: str) -> str:
+    """Stable DHT content key for a (uri, author) pair.
+
+    The key is stable across manifest versions, so the swarm of providers
+    stays coherent when the author publishes v2 — newer seeders simply
+    replace older ones, without forcing rediscovery.
+    """
+    digest = hashlib.sha256(f"{uri}:{public_key_b64}".encode("utf-8")).hexdigest()
+    return f"/mdp2p/{digest}"
+
+
+def compute_manifest_ref(manifest: dict) -> str:
+    """Hex SHA-256 of the canonical JSON of a signed manifest.
+
+    Used as the stable content identifier in the naming layer: the author
+    publishes (uri, public_key, manifest_ref) and seeders serve the bundle
+    whose manifest hashes to exactly that ref.
+    """
+    return hashlib.sha256(_canonical_json(manifest)).hexdigest()
+
+
+def build_name_record(
+    uri: str,
+    author: str,
+    public_key_b64: str,
+    manifest_ref: str,
+    timestamp: Optional[int] = None,
+) -> dict:
+    """Build a naming record (unsigned). Pair with sign_name_record()."""
+    return {
+        "uri": uri,
+        "author": author,
+        "public_key": public_key_b64,
+        "manifest_ref": manifest_ref,
+        "timestamp": timestamp if timestamp is not None else int(time.time()),
+    }
+
+
+def sign_name_record(record: dict, private_key: Ed25519PrivateKey) -> str:
+    """Sign a naming record. Returns base64 signature over canonical JSON.
+
+    The record's public_key must match the signing key.
+    """
+    expected_pub = public_key_to_b64(private_key.public_key())
+    if record.get("public_key") != expected_pub:
+        raise ValueError("record public_key does not match signing private key")
+    signature = private_key.sign(_canonical_json(record))
+    return base64.b64encode(signature).decode()
+
+
+def verify_name_record(
+    record: dict,
+    signature_b64: str,
+    max_drift: Optional[int] = MAX_TIMESTAMP_DRIFT_SECONDS,
+) -> Tuple[bool, str]:
+    """Verify a naming record against its embedded public key.
+
+    Returns (is_valid, error_message). The record is self-contained: the
+    signature is checked against record["public_key"]. max_drift=None skips
+    the drift check (used for federation or replay scenarios).
+    """
+    required = ("uri", "author", "public_key", "manifest_ref", "timestamp")
+    missing = [field for field in required if field not in record]
+    if missing:
+        return False, f"missing fields: {', '.join(missing)}"
+
+    try:
+        if max_drift is not None:
+            now = int(time.time())
+            drift = abs(now - int(record["timestamp"]))
+            if drift > max_drift:
+                return False, f"timestamp drift too large ({drift}s)"
+
+        pub_key = b64_to_public_key(record["public_key"])
+        signature = base64.b64decode(signature_b64)
+        pub_key.verify(signature, _canonical_json(record))
+        return True, ""
+    except InvalidSignature:
+        return False, "invalid signature"
+    except Exception as e:
+        return False, f"verification error: {e}"
 
 
 def save_bundle(site_dir: str, manifest: dict, signature: str) -> None:

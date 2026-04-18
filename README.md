@@ -1,100 +1,122 @@
-# MDP2P — Protocole md:// (Markdown Peer-to-Peer)
+# MDP2P — md:// Protocol (Markdown Peer-to-Peer) over libp2p
 
-Un web decentralise base sur Markdown. Chaque visiteur devient seeder.
+A decentralized web based on Markdown. Every visitor becomes a seeder.
 
 ## Concept
 
 ```
-Client tape md://blog.alice
-       |
-       v
-   +-----------+
-   |  Tracker   |  "blog.alice" -> cle publique + liste de peers
-   +-----------+
-       |
-       v
-   Telecharge le bundle signe depuis un peer
-   Verifie signature ed25519 + integrite SHA-256
-       |
-       v
-   Rendu local du Markdown
-   S'annonce comme nouveau seeder -> le swarm grandit
+Client types md://blog.alice
+       │
+       ▼
+  ┌───────────────┐
+  │ Naming server │   "blog.alice" → {author_pubkey, manifest_ref}
+  └───────────────┘        (record signed by the author, non-trusted)
+       │
+       ▼
+       Kademlia DHT       ADD_PROVIDER / GET_PROVIDERS
+       /mdp2p/<sha256>    (peer zero = bootstrap + relay + naming)
+       │
+       ▼
+   Stream /mdp2p/bundle/1.0.0 (direct, or via Circuit Relay v2 behind NAT)
+   DCUtR attempts a direct connection whenever possible
+       │
+       ▼
+   ed25519 signature + manifest hash + SHA-256 file integrity checks
+   TOFU pinning of the public key
+       │
+       ▼
+   Local Markdown rendering
+   The client announces itself as a new seeder → the swarm grows
 ```
 
 ## Architecture
 
-| Module              | Role                                                    |
-|---------------------|---------------------------------------------------------|
-| `protocol.py`       | Messages JSON prefixes sur TCP, validation URI, rate limiting |
-| `bundle.py`         | Creation, signature et verification de bundles Markdown |
-| `tracker.py`        | Serveur de resolution URI -> peers, federation, Redis   |
-| `peer.py`           | Noeud P2P : telecharge, verifie, seed, met a jour      |
-| `publish.py`        | CLI pour publier un site et rester seeder               |
-| `demo.py`           | Demonstration end-to-end avec federation                |
-| `mdp2p_client/`     | Client interactif terminal (i18n : fr/en/zh/ar/hi)     |
+| Module              | Role                                                              |
+|---------------------|-------------------------------------------------------------------|
+| `bundle.py`         | Creation, signing and verification of Markdown bundles + URIs     |
+| `wire.py`           | Length-prefixed JSON framing over libp2p streams                  |
+| `naming.py`         | Resolution `uri → (author_pubkey, manifest_ref)` over libp2p      |
+| `peer.py`           | libp2p peer: publishes, downloads, seeds, DHT, Circuit Relay v2   |
+| `peer_zero.py`      | Combined naming + relay HOP + DHT bootstrap for a public VPS      |
+| `publish.py`        | CLI to publish a site and keep seeding                            |
+| `pinstore.py`       | TOFU key pinning (similar to SSH `known_hosts`)                   |
+| `demo.py`           | End-to-end in-process demonstration                               |
+| `mdp2p_client/`     | Interactive terminal client (i18n: fr/en/zh/ar/hi)                |
 
 ## Installation
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e .
-
-# Pour le developpement et les tests
 pip install -e ".[dev]"
 ```
 
-## Utilisation
+On macOS ARM the transitive `fastecdsa` dependency must be built against
+GMP: `brew install gmp` then
+`CFLAGS="-I$(brew --prefix gmp)/include" LDFLAGS="-L$(brew --prefix gmp)/lib" pip install ...`.
 
-### Lancer le tracker
+On Linux, `apt install libgmp-dev build-essential` (already in the
+Dockerfile).
+
+## Usage
+
+### Deploy the peer-zero (public VPS)
 
 ```bash
-python tracker.py --port 1707
-python tracker.py --port 1707 --peers 192.168.1.10:1707  # avec federation
-python tracker.py --port 1707 --no-redis                  # sans persistence Redis
+docker compose up -d
 ```
 
-### Publier un site
+The `peer-zero` service exposes on port 1707:
+  - the naming protocol `/mdp2p/naming/1.0.0`
+  - Circuit Relay v2 (HOP) for NAT'd peers
+  - a DHT entry point for newcomers
+
+The PeerID is persisted via a `peer_zero_data` volume.
+
+### Publish a site
 
 ```bash
-python publish.py --uri blog --author alice --site ./mon_site --tracker localhost:1707
+python publish.py \
+    --uri blog --author alice \
+    --site ./my_site \
+    --naming /dns4/relay.mdp2p.net/tcp/1707/p2p/<PEER_ZERO_ID>
 ```
 
-### Client interactif
+### Interactive client
 
 ```bash
-mdp2p                    # mode interactif
-mdp2p setup --author alice --tracker localhost:1707
-mdp2p publish --uri blog --site ./mon_site
-mdp2p list
+mdp2p setup --author alice \
+    --naming /dns4/relay.mdp2p.net/tcp/1707/p2p/<PEER_ZERO_ID>
+mdp2p                    # interactive mode
+mdp2p publish --uri blog --site ./my_site
+mdp2p browse
 mdp2p status
 ```
 
-### Lancer la demo
+### Run the local demo
 
 ```bash
 python demo.py
 ```
 
-La demo simule :
-1. Deux trackers federes demarrent et se synchronisent
-2. Alice publie un site sur `md://demo` via le tracker A
-3. La registration se propage au tracker B (federation)
-4. Bob telecharge, verifie la signature et le contenu, devient seeder (swarm = 2)
-5. Charlie fait de meme (swarm = 3)
-6. Verification que les 3 copies sont identiques (meme signature)
+1. Starts a naming server + 3 trio/libp2p peers
+2. Alice publishes a site on `md://demo`
+3. Bob discovers Alice via the DHT, downloads, becomes a seeder
+4. Charlie discovers both Alice AND Bob, becomes a seeder in turn
+5. Verifies that all 3 copies have identical signatures
 
-## Securite
+## Security
 
-- **Identite** : chaque site a une paire de cles ed25519
-- **Authenticite** : le manifeste est signe — impossible d'injecter du contenu
-- **Integrite** : chaque fichier est hashe en SHA-256, les fichiers non declares sont detectes
-- **Resilience** : le site survit tant qu'un seul peer est en ligne
-- **Anti-traversal** : validation stricte des URI et des chemins de fichiers
-- **Anti-spoofing** : le tracker utilise l'IP reelle de connexion, pas celle declaree
-- **Anti-abus** : rate limiting par IP, timeouts sur toutes les connexions
-- **Expiration** : les peers inactifs sont supprimes apres 10 minutes (TTL)
-- **Freshness** : les manifestes ont une date d'expiration (TTL 30 jours)
+- **Editorial identity**: each site has an ed25519 keypair (the author), distinct from the libp2p identity (PeerID) which only serves the transport layer.
+- **Authenticity**: the manifest is signed — no content can be injected.
+- **Integrity**: every file is hashed with SHA-256; unauthorized files are detected.
+- **Non-trusted naming**: records are signed by the author, so the naming server cannot forge them; it is merely a highly-available cache.
+- **URI hijack prevention**: a second register attempt on a URI with a different pubkey is refused.
+- **Monotonic versioning**: timestamps must be strictly increasing for each update.
+- **Anti-MITM**: TOFU key pinning (`~/.mdp2p/known_keys.json`).
+- **Anti-traversal**: strict validation of URIs and file paths.
+- **Resilience**: the site survives as long as at least one peer stays online.
+- **Relay limits**: `RelayLimits` caps free bandwidth (100 MiB per reservation, 10 concurrent circuits).
 
 ## Tests
 
@@ -102,18 +124,33 @@ La demo simule :
 pytest tests/ -v
 ```
 
-72 tests couvrent les modules critiques : crypto, validation, protocole, tracker (y compris federation, TTL, rate limiting).
+84 tests cover: bundle (crypto + URI), pinstore (TOFU), naming
+(register/resolve/persistence/anti-hijack), peer (publish/fetch/TOFU/
+update), DHT (swarm discovery), relay (smoke).
 
-## Dependances
+## Dependencies
 
 - Python 3.10+
 - `cryptography>=42.0.0` (ed25519 + serialization)
-- `redis>=5.0.0` (optionnel, pour la persistence du tracker)
+- `libp2p>=0.6.0` (Kademlia DHT + Circuit Relay v2 + DCUtR)
+- `trio>=0.27.0` (async framework used by py-libp2p)
+- `multiaddr>=0.0.9`
 
-## Prochaines etapes
+## Next steps
 
-- [ ] DHT pour resolution sans tracker central
-- [ ] NAT traversal (hole punching)
-- [ ] Navigateur Tauri avec rendu Markdown natif
-- [ ] Support des fichiers non-Markdown (images, assets)
-- [ ] Protocole de diff pour mises a jour incrementales
+- [ ] NAT-traversal testing across two distinct residential routers (Circuit Relay v2 + DCUtR validated on localhost via the prototype, but needs confirmation under real-world conditions).
+- [ ] Tauri browser with native Markdown rendering.
+- [ ] Bundle chunking/streaming for sites larger than a few MB.
+- [ ] Diff protocol for incremental updates.
+- [ ] IPNS-like signed resolver in the DHT (naming option A), to remove reliance on the peer-zero entirely.
+
+## Prototype validation
+
+The `prototypes/libp2p/` folder contains three throwaway demos that served
+as feasibility proofs before the migration:
+
+- `hello.py`: transport of a signed manifest over a custom libp2p stream.
+- `dht_demo.py`: tracker-less discovery via provider records.
+- `nat_demo.py`: circuit relay + DCUtR.
+
+They run from their own `venv` in `prototypes/libp2p/.venv`.

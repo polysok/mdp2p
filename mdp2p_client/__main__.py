@@ -5,29 +5,37 @@ MDP2P Client — Interactive terminal interface for managing seeded sites.
 Usage:
     mdp2p                  # Interactive mode
     mdp2p list             # List all seeded sites
-    mdp2p browse           # List all sites registered on the tracker
+    mdp2p browse           # List all sites registered on the naming server
     mdp2p pins             # List pinned public keys (TOFU)
     mdp2p unpin blog       # Remove a pinned key
     mdp2p publish --uri blog --site ./mon_site       # or --uri md://blog
     mdp2p remove blog                                # or md://blog
-    mdp2p setup --author alice --tracker localhost:1707
+    mdp2p setup --author alice --naming /ip4/1.2.3.4/tcp/1707/p2p/12D3Koo...
     mdp2p status
 """
 
 import argparse
-import asyncio
 import getpass
+import secrets
 import shutil
 import subprocess
 import sys
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+import multiaddr
+import trio
+from libp2p import new_host
+from libp2p.crypto.ed25519 import create_new_key_pair
+from libp2p.peer.peerinfo import info_from_p2p_addr
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from bundle import generate_keypair, make_key_name
-from peer import Peer
+from naming import client_list
+from peer import run_peer
 from pinstore import load_pinstore, unpin_key
 
 from .config import (
@@ -155,7 +163,7 @@ def print_seeds_table(sites: list[SeededSite]):
 
 
 def print_browse_table(sites: list[dict]):
-    """Print a colored table of sites from the tracker."""
+    """Print a colored table of sites registered on the naming server."""
     if not sites:
         print(f"\n  {c.YELLOW}{t('browse_no_sites')}{c.RESET}")
         return
@@ -163,7 +171,6 @@ def print_browse_table(sites: list[dict]):
     headers = [
         t("col_uri"),
         t("col_author"),
-        t("col_peers"),
         t("col_published"),
     ]
     rows = []
@@ -174,7 +181,6 @@ def print_browse_table(sites: list[dict]):
         rows.append([
             f"md://{site['uri']}",
             f"{author}{key_hint}",
-            str(site.get("peers", 0)),
             format_timestamp(site.get("timestamp", 0)),
         ])
 
@@ -196,8 +202,7 @@ def print_browse_table(sites: list[dict]):
         cells = [
             f"{c.MAGENTA}{row[0].ljust(col_widths[0])}{c.RESET}",
             f"{c.CYAN}{row[1].ljust(col_widths[1])}{c.RESET}",
-            f"{c.GREEN}{row[2].ljust(col_widths[2])}{c.RESET}",
-            f"{c.DIM}{row[3].ljust(col_widths[3])}{c.RESET}",
+            f"{c.DIM}{row[2].ljust(col_widths[2])}{c.RESET}",
         ]
         print("  " + " │ ".join(cells))
 
@@ -249,6 +254,15 @@ def fix_permissions(e: PermissionError) -> bool:
 # ── Publish helper ─────────────────────────────────────────────────
 
 
+def _require_naming(config: ClientConfig) -> str:
+    if not config.naming_multiaddr:
+        raise RuntimeError(
+            "No naming server configured. Run `mdp2p setup --author NAME "
+            "--naming /ip4/.../tcp/1707/p2p/12D3Koo...`."
+        )
+    return config.naming_multiaddr
+
+
 async def _do_publish(config: ClientConfig, uri: str, site_path: Path) -> None:
     """Core publish logic shared by interactive and CLI modes."""
     uri = strip_uri_scheme(uri)
@@ -273,15 +287,35 @@ async def _do_publish(config: ClientConfig, uri: str, site_path: Path) -> None:
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(md_file, dest)
 
-    peer = Peer(
+    naming_info = info_from_p2p_addr(multiaddr.Multiaddr(_require_naming(config)))
+    async with run_peer(
         data_dir=str(peer_data_dir),
-        host="127.0.0.1",
         port=config.port,
-        tracker_host=config.tracker_host,
-        tracker_port=config.tracker_port,
-    )
+        naming_info=naming_info,
+    ) as peer:
+        await peer.publish(uri, config.author, str(peer_data_dir), str(priv_path))
 
-    await peer.publish(uri, config.author, str(peer_data_dir), str(priv_path))
+
+@asynccontextmanager
+async def _ephemeral_host():
+    """A short-lived libp2p host used for one-off RPC calls (browse, etc.)."""
+    host = new_host(key_pair=create_new_key_pair(secrets.token_bytes(32)))
+    listen = [multiaddr.Multiaddr("/ip4/127.0.0.1/tcp/0")]
+    async with host.run(listen_addrs=listen), trio.open_nursery() as nursery:
+        nursery.start_soon(host.get_peerstore().start_cleanup_task, 60)
+        try:
+            yield host
+        finally:
+            nursery.cancel_scope.cancel()
+
+
+async def _list_registered_sites(config: ClientConfig) -> list[dict]:
+    naming_info = info_from_p2p_addr(multiaddr.Multiaddr(_require_naming(config)))
+    async with _ephemeral_host() as host:
+        response = await client_list(host, naming_info)
+        if response.get("type") != "names":
+            raise RuntimeError(response.get("msg", "unknown naming error"))
+        return response.get("records", [])
 
 
 # ── Interactive actions ─────────────────────────────────────────────
@@ -310,7 +344,7 @@ async def action_add(config: ClientConfig):
         return
 
     print(f"\n  {t('add_publishing', author=config.author, uri=uri)}")
-    print(f"  {c.DIM}{t('add_tracker', host=config.tracker_host, port=config.tracker_port)}{c.RESET}")
+    print(f"  {c.DIM}{t('add_naming', addr=config.naming_multiaddr or '—')}{c.RESET}")
     print(f"  {c.DIM}{t('add_md_found', count=len(md_files))}{c.RESET}")
 
     for attempt in range(2):
@@ -425,19 +459,10 @@ def action_pins():
 
 
 async def action_browse(config: ClientConfig):
-    """Interactive browse: list all sites registered on the tracker."""
-    peer = Peer(
-        host="127.0.0.1",
-        port=config.port,
-        tracker_host=config.tracker_host,
-        tracker_port=config.tracker_port,
-    )
+    """Interactive browse: list all sites registered on the naming server."""
     try:
-        result = await peer.list_sites()
-        if result.get("type") == "site_list":
-            print_browse_table(result.get("sites", []))
-        else:
-            print(f"\n  {c.RED}{t('browse_error', error=result.get('msg', '?'))}{c.RESET}")
+        records = await _list_registered_sites(config)
+        print_browse_table(records)
     except Exception as e:
         print(f"\n  {c.RED}{t('browse_error', error=e)}{c.RESET}")
 
@@ -504,7 +529,7 @@ def action_config(config: Optional[ClientConfig]) -> ClientConfig:
     if config:
         sites = get_seeded_sites(config.data_dir)
         print(f"  {c.BOLD}{t('config_author'):<14}{c.RESET} : {c.CYAN}{config.author}{c.RESET}")
-        print(f"  {c.BOLD}{t('config_tracker'):<14}{c.RESET} : {config.tracker_host}:{config.tracker_port}")
+        print(f"  {c.BOLD}{t('config_naming'):<14}{c.RESET} : {config.naming_multiaddr or '—'}")
         print(f"  {c.BOLD}{t('config_keys_dir'):<14}{c.RESET} : {c.DIM}{config.keys_dir}{c.RESET}")
         print(f"  {c.BOLD}{t('config_data_dir'):<14}{c.RESET} : {c.DIM}{config.data_dir}{c.RESET}")
         print(f"  {c.BOLD}{t('config_language'):<14}{c.RESET} : {config.language}")
@@ -522,17 +547,12 @@ def action_config(config: Optional[ClientConfig]) -> ClientConfig:
     if author:
         config.author = author
 
-    tracker = prompt_input(
-        t("config_tracker_prompt"),
-        f"[{config.tracker_host}:{config.tracker_port}]",
+    naming = prompt_input(
+        t("config_naming_prompt"),
+        f"[{config.naming_multiaddr or '—'}]",
     )
-    if tracker:
-        if ":" in tracker:
-            host, port = tracker.split(":", 1)
-            config.tracker_host = host
-            config.tracker_port = int(port)
-        else:
-            config.tracker_host = tracker
+    if naming:
+        config.naming_multiaddr = naming
 
     lang = prompt_input(t("config_lang_prompt"), f"[{config.language}]")
     if lang and lang in SUPPORTED_LANGUAGES:
@@ -647,21 +667,11 @@ def cli_unpin(uri: str):
 
 
 async def cli_browse(config: ClientConfig):
-    """CLI: List all sites registered on the tracker."""
-    peer = Peer(
-        host="127.0.0.1",
-        port=config.port,
-        tracker_host=config.tracker_host,
-        tracker_port=config.tracker_port,
-    )
+    """CLI: List all sites registered on the naming server."""
     try:
-        result = await peer.list_sites()
-        if result.get("type") == "site_list":
-            print_browse_table(result.get("sites", []))
-            return 0
-        else:
-            print(f"  {c.RED}{t('browse_error', error=result.get('msg', '?'))}{c.RESET}")
-            return 1
+        records = await _list_registered_sites(config)
+        print_browse_table(records)
+        return 0
     except Exception as e:
         print(f"  {c.RED}{t('browse_error', error=e)}{c.RESET}")
         return 1
@@ -734,7 +744,7 @@ async def cli_remove(config: ClientConfig, uri: str):
 def cli_setup(
     config: Optional[ClientConfig],
     author: str,
-    tracker: Optional[str] = None,
+    naming: Optional[str] = None,
     language: Optional[str] = None,
 ):
     """CLI: Setup configuration."""
@@ -743,13 +753,8 @@ def cli_setup(
     else:
         config.author = author
 
-    if tracker:
-        if ":" in tracker:
-            host, port = tracker.split(":", 1)
-            config.tracker_host = host
-            config.tracker_port = int(port)
-        else:
-            config.tracker_host = tracker
+    if naming:
+        config.naming_multiaddr = naming
 
     if language and language in SUPPORTED_LANGUAGES:
         config.language = language
@@ -762,7 +767,7 @@ def cli_setup(
             config.save()
             print(f"\n  {c.GREEN}{c.BOLD}{t('config_saved')}{c.RESET}")
             print(f"  {c.BOLD}{t('config_author')}{c.RESET}   : {c.CYAN}{config.author}{c.RESET}")
-            print(f"  {c.BOLD}{t('config_tracker')}{c.RESET}  : {config.tracker_host}:{config.tracker_port}")
+            print(f"  {c.BOLD}{t('config_naming')}{c.RESET}  : {config.naming_multiaddr or '—'}")
             print(f"  {c.BOLD}{t('config_language')}{c.RESET}  : {config.language}")
             return 0
         except PermissionError as e:
@@ -780,7 +785,7 @@ def cli_status(config: ClientConfig):
 
     print(f"\n  {c.BOLD}{c.CYAN}── {t('config_header')} ──{c.RESET}\n")
     print(f"  {c.BOLD}{t('config_author'):<14}{c.RESET} : {c.CYAN}{config.author}{c.RESET}")
-    print(f"  {c.BOLD}{t('config_tracker'):<14}{c.RESET} : {config.tracker_host}:{config.tracker_port}")
+    print(f"  {c.BOLD}{t('config_naming'):<14}{c.RESET} : {config.naming_multiaddr or '—'}")
     print(f"  {c.BOLD}{t('config_keys_dir'):<14}{c.RESET} : {c.DIM}{config.keys_dir}{c.RESET}")
     print(f"  {c.BOLD}{t('config_data_dir'):<14}{c.RESET} : {c.DIM}{config.data_dir}{c.RESET}")
     print(f"  {c.BOLD}{t('config_language'):<14}{c.RESET} : {config.language}")
@@ -810,10 +815,13 @@ async def main():
 
     setup_parser = subparsers.add_parser("setup", help="Setup client configuration")
     setup_parser.add_argument("--author", required=True, help="Author name")
-    setup_parser.add_argument("--tracker", help="Tracker address (e.g., localhost:1707)")
+    setup_parser.add_argument(
+        "--naming",
+        help="Naming server multiaddr (e.g., /ip4/1.2.3.4/tcp/1707/p2p/12D3Koo...)",
+    )
     setup_parser.add_argument("--language", help="Language (fr/en/zh/ar/hi)")
 
-    subparsers.add_parser("browse", help="List all sites registered on the tracker")
+    subparsers.add_parser("browse", help="List all sites registered on the naming server")
 
     subparsers.add_parser("pins", help="List pinned public keys (TOFU)")
 
@@ -835,7 +843,7 @@ async def main():
         return 0
 
     if args.command == "setup":
-        return cli_setup(config, args.author, args.tracker, args.language)
+        return cli_setup(config, args.author, args.naming, args.language)
 
     if args.command == "pins":
         cli_pins()
@@ -845,7 +853,7 @@ async def main():
 
     if config is None:
         print(f"  {c.RED}{t('error_not_configured')}{c.RESET}")
-        print(f"  {c.DIM}mdp2p setup --author yourname --tracker localhost:1707{c.RESET}")
+        print(f"  {c.DIM}mdp2p setup --author yourname --naming /ip4/.../tcp/1707/p2p/...{c.RESET}")
         return 1
 
     config = ensure_config(config)
@@ -869,7 +877,7 @@ async def main():
 
 def run():
     """Entry point for the mdp2p console command."""
-    sys.exit(asyncio.run(main()) or 0)
+    sys.exit(trio.run(main) or 0)
 
 
 if __name__ == "__main__":

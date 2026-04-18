@@ -332,3 +332,75 @@ class TestDictToBundleLimits:
         }
         with pytest.raises(ValueError, match="exceeds size limit"):
             dict_to_bundle(data, str(tmp_path / "out"))
+
+
+# ─── URI validation (migrated from test_protocol.py in Phase 6) ─────────
+
+from bundle import validate_uri
+
+
+class TestValidateUri:
+    def test_accepts_simple(self):
+        assert validate_uri("demo") == "demo"
+
+    def test_accepts_dotted(self):
+        assert validate_uri("blog.alice") == "blog.alice"
+
+    def test_accepts_hyphens_underscores(self):
+        assert validate_uri("my-site_v2") == "my-site_v2"
+
+    def test_accepts_max_length(self):
+        uri = "a" * 255
+        assert validate_uri(uri) == uri
+
+    def test_rejects_empty(self):
+        with pytest.raises(ValueError, match="non-empty"):
+            validate_uri("")
+
+    def test_rejects_none(self):
+        with pytest.raises(ValueError, match="non-empty"):
+            validate_uri(None)
+
+    def test_rejects_path_traversal(self):
+        with pytest.raises(ValueError, match="forbidden"):
+            validate_uri("../../etc")
+
+    def test_rejects_dot(self):
+        with pytest.raises(ValueError, match="traversal"):
+            validate_uri(".")
+
+    def test_rejects_dotdot(self):
+        with pytest.raises(ValueError, match="traversal"):
+            validate_uri("..")
+
+    def test_rejects_embedded_dotdot(self):
+        with pytest.raises(ValueError, match="traversal"):
+            validate_uri("foo..bar")
+
+    def test_rejects_slash(self):
+        with pytest.raises(ValueError, match="forbidden"):
+            validate_uri("foo/bar")
+
+    def test_rejects_backslash(self):
+        with pytest.raises(ValueError, match="forbidden"):
+            validate_uri("foo\\bar")
+
+    def test_rejects_null_byte(self):
+        with pytest.raises(ValueError, match="forbidden"):
+            validate_uri("foo\x00bar")
+
+    def test_rejects_too_long(self):
+        with pytest.raises(ValueError, match="too long"):
+            validate_uri("a" * 256)
+
+    def test_rejects_spaces(self):
+        with pytest.raises(ValueError, match="invalid characters"):
+            validate_uri("my site")
+
+    def test_rejects_starting_with_dot(self):
+        with pytest.raises(ValueError, match="invalid characters"):
+            validate_uri(".hidden")
+
+    def test_rejects_starting_with_hyphen(self):
+        with pytest.raises(ValueError, match="invalid characters"):
+            validate_uri("-flag")

@@ -1,244 +1,338 @@
 """
-MDP2P Peer — P2P node that downloads, verifies, seeds and renders Markdown sites.
+MDP2P Peer — publishes, fetches, seeds Markdown bundles over libp2p.
 
-A peer has two roles:
-  - Client: resolves a URI via the tracker, downloads the bundle from another peer
-  - Seeder: listens on a port and serves the bundles it owns
+Architecture:
+  - Identity: libp2p PeerID (transport) distinct from the author's ed25519
+    pubkey (content). Author identity travels in the signed manifest; the
+    PeerID is stable per machine via a seed file.
+  - Discovery: the naming service (see naming.py) resolves uri → (author_pubkey,
+    manifest_ref); the list of seeders will come from the DHT in Phase 3.
+    In Phase 2 callers supply seeder multiaddrs directly.
+  - Transport: custom protocol /mdp2p/bundle/1.0.0 over libp2p streams.
+    Messages are length-prefixed JSON. A bundle transfer is a single message
+    whose size is capped by MAX_BUNDLE_MSG_SIZE.
 
-Once a client downloads a site, it automatically becomes a seeder.
+Public API (Peer class):
+  - publish(uri, author, site_dir, priv_key_path) → creates the bundle, signs,
+    registers on the naming service, stores site locally for seeding.
+  - fetch_site(uri, seeder_addrs) → resolve, verify author signature, TOFU,
+    download, persist to data_dir.
+  - check_for_update(uri, seeder_addr) → compare timestamps.
+
+Lifecycle is delegated to the `run_peer` async context manager so the libp2p
+host shutdown happens cleanly on exit.
 """
 
-import asyncio
+from __future__ import annotations
+
 import logging
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import AsyncIterator, Optional
+
+import multiaddr
+import trio
+from libp2p import new_host
+from libp2p.abc import IHost
+from libp2p.crypto.ed25519 import create_new_key_pair
+from libp2p.custom_types import TProtocol
+from libp2p.network.stream.net_stream import INetStream
+from libp2p.peer.peerinfo import PeerInfo, info_from_p2p_addr
 
 from bundle import (
+    b64_to_public_key,
+    build_name_record,
     bundle_to_dict,
-    dict_to_bundle,
-    verify_manifest,
-    verify_files,
-    load_bundle,
-    save_bundle,
+    compute_content_key,
+    compute_manifest_ref,
     create_manifest,
-    sign_manifest,
+    dict_to_bundle,
+    is_manifest_expired,
+    load_bundle,
     load_private_key,
     public_key_to_b64,
-    b64_to_public_key,
-    create_register_proof,
-    is_manifest_expired,
+    save_bundle,
+    sign_manifest,
+    sign_name_record,
     validate_path,
+    validate_uri,
+    verify_files,
+    verify_manifest,
+    verify_name_record,
 )
-from pinstore import PinStatus, load_pinstore, check_pin, pin_key, update_pin_last_seen
-from protocol import CONNECT_TIMEOUT, send_msg, recv_msg, validate_uri
+from libp2p.kad_dht.kad_dht import DHTMode, KadDHT
+from libp2p.relay.circuit_v2.config import RelayConfig, RelayRole
+from libp2p.relay.circuit_v2.dcutr import DCUtRProtocol
+from libp2p.relay.circuit_v2.discovery import RelayDiscovery
+from libp2p.relay.circuit_v2.protocol import (
+    PROTOCOL_ID as HOP_PROTOCOL_ID,
+    STOP_PROTOCOL_ID,
+    CircuitV2Protocol,
+)
+from libp2p.relay.circuit_v2.resources import RelayLimits
+from libp2p.relay.circuit_v2.transport import CircuitV2Transport
+from libp2p.tools.async_service import background_trio_service
+from naming import (
+    client_register as naming_register,
+    client_resolve as naming_resolve,
+)
+from naming import load_or_create_peer_seed
+from pinstore import PinStatus, check_pin, pin_key, update_pin_last_seen
+from wire import recv_framed_json, send_framed_json
 
 logger = logging.getLogger("mdp2p.peer")
 
-DOWNLOAD_TIMEOUT = 30  # seconds per peer download
+BUNDLE_PROTOCOL = TProtocol("/mdp2p/bundle/1.0.0")
+MAX_BUNDLE_MSG_SIZE = 100 * 1024 * 1024  # 100 MiB — bundle cap is 50 MiB in bundle.py
+DEFAULT_DATA_DIR = "./peer_data"
+DEFAULT_PINSTORE = str(Path.home() / ".mdp2p" / "known_keys.json")
+
+
+def _default_relay_limits() -> RelayLimits:
+    """Conservative limits for a public peer-zero running as a relay.
+
+    100 MiB/reservation and 10 concurrent circuits caps bandwidth so the
+    relay cannot be trivially abused as free bandwidth.
+    """
+    return RelayLimits(
+        duration=3600,
+        data=100 * 1024 * 1024,
+        max_circuit_conns=10,
+        max_reservations=20,
+    )
 
 
 class Peer:
+    """Stateful wrapper around a libp2p host that serves and fetches bundles."""
+
     def __init__(
         self,
-        data_dir: str = "./peer_data",
-        host: str = "127.0.0.1",
-        port: int = 5000,
-        tracker_host: str = "127.0.0.1",
-        tracker_port: int = 1707,
-        pinstore_path: Optional[str] = None,
+        host: IHost,
+        data_dir: str = DEFAULT_DATA_DIR,
+        naming_info: Optional[PeerInfo] = None,
+        pinstore_path: str = DEFAULT_PINSTORE,
+        dht: Optional[KadDHT] = None,
+        relay_transport: Optional[CircuitV2Transport] = None,
     ):
+        self.host = host
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.host = host
-        self.port = port
-        self.tracker_host = tracker_host
-        self.tracker_port = tracker_port
-        self.pinstore_path = pinstore_path or str(
-            Path.home() / ".mdp2p" / "known_keys.json"
-        )
-        self.sites: dict = {}
-        self._server: Optional[asyncio.AbstractServer] = None
-        self._stopping = False
+        self.naming_info = naming_info
+        self.pinstore_path = pinstore_path
+        self.dht = dht
+        self.relay_transport = relay_transport
+        self.sites: dict[str, str] = {}
 
-    # ─── Tracker communication ───────────────────────────────────────
+    def attach(self) -> None:
+        self.host.set_stream_handler(BUNDLE_PROTOCOL, self._handle_bundle_request)
+        self._rediscover_local_sites()
 
-    async def _tracker_request(self, msg: dict) -> dict:
-        """Send a message to the tracker and return the response."""
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(self.tracker_host, self.tracker_port),
-            timeout=CONNECT_TIMEOUT,
-        )
-        try:
-            await send_msg(writer, msg)
-            response = await recv_msg(reader)
-            return response or {"type": "error", "msg": "No response from tracker"}
-        finally:
-            writer.close()
-            await writer.wait_closed()
+    def _rediscover_local_sites(self) -> None:
+        """Populate self.sites by scanning data_dir for previously-seeded bundles."""
+        for site_dir in self.data_dir.iterdir() if self.data_dir.exists() else []:
+            if not site_dir.is_dir():
+                continue
+            try:
+                manifest, _ = load_bundle(str(site_dir))
+                uri = manifest.get("uri")
+                if uri:
+                    self.sites[uri] = str(site_dir)
+            except Exception:
+                continue
 
-    async def register_site(
-        self, uri: str, author: str, public_key_b64: str, proof: str, timestamp: int
-    ) -> dict:
-        """Register a URI alias on the tracker with proof of key ownership."""
-        return await self._tracker_request(
-            {
-                "type": "register",
-                "uri": uri,
-                "author": author,
-                "public_key": public_key_b64,
-                "proof": proof,
-                "timestamp": timestamp,
-            }
-        )
+    @property
+    def addrs(self) -> list[str]:
+        peer_id_component = f"/p2p/{self.host.get_id().to_string()}"
+        result: list[str] = []
+        for addr in self.host.get_addrs():
+            s = str(addr)
+            if peer_id_component in s:
+                result.append(s)
+            else:
+                result.append(s + peer_id_component)
+        return result
 
-    async def announce(self, uri: str) -> dict:
-        """Announce self as a seeder for a site."""
-        return await self._tracker_request(
-            {"type": "announce", "uri": uri, "host": self.host, "port": self.port}
-        )
-
-    async def unannounce(self, uri: str) -> dict:
-        """Remove self from a site's swarm."""
-        return await self._tracker_request(
-            {"type": "unannounce", "uri": uri, "host": self.host, "port": self.port}
-        )
-
-    async def resolve(self, uri: str) -> dict:
-        """Resolve a URI to a public key and list of peers."""
-        return await self._tracker_request({"type": "resolve", "uri": uri})
-
-    async def list_sites(self) -> dict:
-        """List all sites registered on the tracker."""
-        return await self._tracker_request({"type": "list"})
-
-    # ─── Publishing (author) ─────────────────────────────────────────
+    # ─── Publishing (author) ──────────────────────────────────────────
 
     async def publish(
-        self, uri: str, author: str, site_dir: str, private_key_path: str
-    ):
-        """Publish a site: create the bundle, register on the tracker, start seeding."""
+        self,
+        uri: str,
+        author: str,
+        site_dir: str,
+        private_key_path: str,
+    ) -> tuple[dict, str]:
+        """Create a signed bundle, register on naming, seed locally.
+
+        Returns (manifest, signature_b64).
+        """
         validate_uri(uri)
-        site_dir = str(Path(site_dir).resolve())
+        if self.naming_info is None:
+            raise ValueError("cannot publish without a naming server configured")
+
+        site_dir_resolved = str(Path(site_dir).resolve())
         private_key = load_private_key(private_key_path)
         pub_b64 = public_key_to_b64(private_key.public_key())
 
         version = 1
-        existing_manifest = Path(site_dir) / "manifest.json"
-        if existing_manifest.exists():
+        manifest_file = Path(site_dir_resolved) / "manifest.json"
+        if manifest_file.exists():
             try:
-                old, _ = load_bundle(site_dir)
-                version = old.get("version", 0) + 1
+                old, _ = load_bundle(site_dir_resolved)
+                version = int(old.get("version", 0)) + 1
             except Exception:
                 pass
 
-        manifest = create_manifest(site_dir, uri=uri, author=author, version=version)
+        manifest = create_manifest(
+            site_dir_resolved, uri=uri, author=author, version=version
+        )
         manifest, signature = sign_manifest(manifest, private_key)
-        save_bundle(site_dir, manifest, signature)
-
+        save_bundle(site_dir_resolved, manifest, signature)
         logger.info(
-            f"Bundle created: {manifest['file_count']} files, {manifest['total_size']} bytes"
+            "bundle signed: %d files, %d bytes, version %d",
+            manifest["file_count"],
+            manifest["total_size"],
+            manifest["version"],
         )
 
-        proof, timestamp = create_register_proof(uri, author, private_key)
-        result = await self.register_site(uri, author, pub_b64, proof, timestamp)
-        logger.info(f"Register: {result.get('msg', result)}")
+        manifest_ref = compute_manifest_ref(manifest)
+        record = build_name_record(uri, author, pub_b64, manifest_ref)
+        name_sig = sign_name_record(record, private_key)
+        resp = await naming_register(self.host, self.naming_info, record, name_sig)
+        if resp.get("type") != "ok":
+            raise RuntimeError(f"naming register failed: {resp.get('msg')}")
+        logger.info("naming registered: %s → %s", uri, manifest_ref[:12])
 
-        self.sites[uri] = site_dir
+        self.sites[uri] = site_dir_resolved
+        await self.announce(uri)
+        return manifest, signature
 
-        result = await self.announce(uri)
-        logger.info(f"Announce: swarm = {result.get('peers', '?')} peers")
+    # ─── DHT announce ────────────────────────────────────────────────
+
+    async def announce(self, uri: str) -> bool:
+        """Advertise this peer as a provider for `uri` in the DHT.
+
+        Requires `dht` to be set and at least one peer in the routing table.
+        Returns True on successful advertisement.
+        """
+        if self.dht is None:
+            logger.debug("announce skipped: no DHT configured")
+            return False
+        if uri not in self.sites:
+            logger.warning("announce called for unknown uri %s", uri)
+            return False
+        manifest, _ = load_bundle(self.sites[uri])
+        author_pub_b64 = manifest.get("public_key", "")
+        if not author_pub_b64:
+            logger.warning("manifest has no public_key for uri %s", uri)
+            return False
+        key = compute_content_key(uri, author_pub_b64)
+        try:
+            ok = await self.dht.provide(key)
+            logger.info("dht.provide(%s): %s", uri, "ok" if ok else "failed")
+            return ok
+        except Exception as e:
+            logger.warning("dht.provide for %s raised: %s", uri, e)
+            return False
+
+    async def find_providers(self, uri: str, author_pub_b64: str) -> list[str]:
+        """Return multiaddr strings of peers advertising `uri` in the DHT."""
+        if self.dht is None:
+            return []
+        key = compute_content_key(uri, author_pub_b64)
+        try:
+            providers = await self.dht.find_providers(key)
+        except Exception as e:
+            logger.warning("dht.find_providers for %s raised: %s", uri, e)
+            return []
+        self_id = self.host.get_id()
+        addrs: list[str] = []
+        for info in providers:
+            if info.peer_id == self_id:
+                continue
+            for addr in info.addrs:
+                addrs.append(f"{addr}/p2p/{info.peer_id.to_string()}")
+        return addrs
 
     # ─── Downloading (client) ────────────────────────────────────────
 
-    async def _try_download(
-        self, peer_host: str, peer_port: int, uri: str
-    ) -> Optional[dict]:
-        """Try to download from one peer with a timeout."""
-        try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(peer_host, peer_port),
-                timeout=DOWNLOAD_TIMEOUT,
-            )
-            try:
-                await send_msg(writer, {"type": "get_bundle", "uri": uri})
-                response = await asyncio.wait_for(
-                    recv_msg(reader), timeout=DOWNLOAD_TIMEOUT
-                )
-                return response
-            finally:
-                writer.close()
-                await writer.wait_closed()
-        except (asyncio.TimeoutError, Exception) as e:
-            logger.warning(f"Connection failed to {peer_host}:{peer_port} — {e}")
-            return None
+    async def fetch_site(
+        self,
+        uri: str,
+        seeder_addrs: Optional[list[str]] = None,
+    ) -> bool:
+        """Resolve via naming, download from a seeder, verify, and seed.
 
-    async def fetch_site(self, uri: str) -> bool:
-        """Resolve a URI, download the site, verify it, and start seeding."""
+        If `seeder_addrs` is None or empty, the DHT is queried for providers.
+        Passing an explicit list bypasses discovery (useful for tests or
+        bootstrap situations where the DHT is unreachable).
+        """
         validate_uri(uri)
-        resolution = await self.resolve(uri)
-        if resolution.get("type") == "error":
-            logger.error(f"Resolution failed: {resolution.get('msg')}")
+        if self.naming_info is None:
+            raise ValueError("cannot fetch without a naming server configured")
+
+        resp = await naming_resolve(self.host, self.naming_info, uri)
+        if resp.get("type") != "record":
+            logger.error("naming resolve failed for %s: %s", uri, resp.get("msg"))
             return False
 
-        author = resolution.get("author", "unknown")
-        public_key_b64 = resolution["public_key"]
-        peers = resolution["peers"]
-        logger.info(f"Resolved {uri} by {author} → {len(peers)} available peers")
+        record = resp["record"]
+        record_sig = resp["signature"]
+        ok, err = verify_name_record(record, record_sig)
+        if not ok:
+            logger.error("naming record signature invalid for %s: %s", uri, err)
+            return False
 
-        # TOFU key pinning check
-        pinstore = load_pinstore(self.pinstore_path)
-        pin_status = check_pin(pinstore, uri, public_key_b64)
+        author_pub_b64 = record["public_key"]
+        expected_ref = record["manifest_ref"]
+        record_author = record.get("author", "unknown")
 
+        if not seeder_addrs:
+            seeder_addrs = await self.find_providers(uri, author_pub_b64)
+            if not seeder_addrs:
+                logger.error(
+                    "no providers found for %s (DHT returned empty)", uri
+                )
+                return False
+            logger.info("DHT lookup for %s: %d provider(s)", uri, len(seeder_addrs))
+
+        pinstore_data = None
+        try:
+            from pinstore import load_pinstore  # local import to avoid circular
+            pinstore_data = load_pinstore(self.pinstore_path)
+        except Exception:
+            pinstore_data = {}
+        pin_status = check_pin(pinstore_data, uri, author_pub_b64)
         if pin_status == PinStatus.MISMATCH:
             logger.error(
-                f"ALERT: Public key changed for '{uri}'! "
-                f"Possible MITM attack. Aborting."
+                "ALERT: public key changed for '%s' — possible MITM; aborting", uri
             )
             return False
 
-        if not peers:
-            logger.error("No peer available!")
-            return False
-
-        other_peers = [
-            p for p in peers
-            if not (p["host"] == self.host and p["port"] == self.port)
-        ]
-        if not other_peers:
-            logger.error("No remote peer available!")
-            return False
-
-        pending = [
-            asyncio.create_task(self._try_download(p["host"], p["port"], uri))
-            for p in other_peers
-        ]
-        bundle_data = None
-        try:
-            for future in asyncio.as_completed(pending):
-                result = await future
-                if result and result.get("type") == "bundle":
-                    bundle_data = result
-                    break
-        finally:
-            for task in pending:
-                if not task.done():
-                    task.cancel()
-
-        if not bundle_data:
-            logger.error("No peer could provide the bundle")
+        bundle_data = await self._try_download_from_seeders(uri, seeder_addrs)
+        if bundle_data is None:
+            logger.error("all seeders failed for %s", uri)
             return False
 
         manifest = bundle_data["manifest"]
-        signature = bundle_data["signature"]
-        trusted_key = b64_to_public_key(public_key_b64)
+        signature_b64 = bundle_data["signature"]
+        trusted_key = b64_to_public_key(author_pub_b64)
 
-        if not verify_manifest(manifest, signature, trusted_key):
-            logger.error("ALERT: Invalid signature or key mismatch!")
+        if not verify_manifest(manifest, signature_b64, trusted_key):
+            logger.error("manifest signature invalid for %s", uri)
             return False
-        logger.info("Signature verified")
+
+        actual_ref = compute_manifest_ref(manifest)
+        if actual_ref != expected_ref:
+            logger.error(
+                "manifest ref mismatch for %s: naming says %s, got %s",
+                uri,
+                expected_ref,
+                actual_ref,
+            )
+            return False
 
         if is_manifest_expired(manifest):
-            logger.error("ALERT: Bundle has expired!")
+            logger.error("manifest expired for %s", uri)
             return False
 
         site_dir = str(self.data_dir / uri)
@@ -246,162 +340,146 @@ class Peer:
 
         errors = verify_files(manifest, site_dir)
         if errors:
-            logger.error(f"Corrupted files: {errors}")
+            logger.error("file integrity errors for %s: %s", uri, errors)
             return False
-        logger.info("File integrity verified")
 
-        # Pin the key after successful verification
         if pin_status == PinStatus.UNKNOWN:
-            pin_key(uri, public_key_b64, author, self.pinstore_path)
-            logger.info(f"Key pinned for '{uri}' (first visit)")
+            pin_key(uri, author_pub_b64, record_author, self.pinstore_path)
+            logger.info("key pinned for '%s' (first visit)", uri)
         else:
             update_pin_last_seen(uri, self.pinstore_path)
 
         self.sites[uri] = site_dir
-        result = await self.announce(uri)
-        logger.info(f"Now seeding! Swarm = {result.get('peers', '?')} peers")
+        logger.info(
+            "fetched %s (%d files, %d bytes)",
+            uri,
+            manifest["file_count"],
+            manifest["total_size"],
+        )
+        # Join the swarm: announce ourselves as a provider.
+        await self.announce(uri)
         return True
 
-    # ─── Update check ──────────────────────────────────────────────
+    async def _try_download_from_seeders(
+        self, uri: str, seeder_addrs: list[str]
+    ) -> Optional[dict]:
+        """Try each seeder in parallel; return the first successful bundle."""
+        results: list[Optional[dict]] = [None] * len(seeder_addrs)
 
-    async def check_for_update(self, uri: str) -> bool:
-        """Check if a newer version of a site exists on the network.
+        async def try_one(idx: int, addr_str: str) -> None:
+            try:
+                maddr = multiaddr.Multiaddr(addr_str)
+                info = info_from_p2p_addr(maddr)
+                if "/p2p-circuit/" in addr_str and self.relay_transport is not None:
+                    # CircuitV2Transport needs the destination peer in the
+                    # peerstore to complete the dial, even though the circuit
+                    # address already carries the peer_id.
+                    self.host.get_peerstore().add_addrs(
+                        info.peer_id, [maddr], 3600
+                    )
+                    await self.relay_transport.dial(maddr)
+                else:
+                    await self.host.connect(info)
+                stream = await self.host.new_stream(info.peer_id, [BUNDLE_PROTOCOL])
+                try:
+                    await send_framed_json(
+                        stream, {"type": "get_bundle", "uri": uri}, MAX_BUNDLE_MSG_SIZE
+                    )
+                    response = await recv_framed_json(stream, MAX_BUNDLE_MSG_SIZE)
+                finally:
+                    await stream.close()
+                if response and response.get("type") == "bundle":
+                    results[idx] = response
+            except Exception as e:
+                logger.warning("fetch from %s failed: %s", addr_str, e)
 
-        Returns True if a peer has a newer timestamp than our local copy.
-        """
+        async with trio.open_nursery() as nursery:
+            for idx, addr in enumerate(seeder_addrs):
+                nursery.start_soon(try_one, idx, addr)
+
+        for r in results:
+            if r is not None:
+                return r
+        return None
+
+    # ─── Update check ────────────────────────────────────────────────
+
+    async def check_for_update(self, uri: str, seeder_addr: str) -> bool:
+        """Return True if a seeder has a newer manifest than our local copy."""
         if uri not in self.sites:
             return False
-
         local_manifest, _ = load_bundle(self.sites[uri])
-        local_ts = local_manifest.get("timestamp", 0)
+        local_ts = int(local_manifest.get("timestamp", 0))
 
-        resolution = await self.resolve(uri)
-        if resolution.get("type") == "error":
-            return False
-
-        for peer in resolution.get("peers", []):
-            if peer["host"] == self.host and peer["port"] == self.port:
-                continue
+        try:
+            info = info_from_p2p_addr(multiaddr.Multiaddr(seeder_addr))
+            await self.host.connect(info)
+            stream = await self.host.new_stream(info.peer_id, [BUNDLE_PROTOCOL])
             try:
-                reader, writer = await asyncio.wait_for(
-                    asyncio.open_connection(peer["host"], peer["port"]),
-                    timeout=DOWNLOAD_TIMEOUT,
+                await send_framed_json(
+                    stream, {"type": "get_manifest", "uri": uri}, MAX_BUNDLE_MSG_SIZE
                 )
-                try:
-                    await send_msg(writer, {"type": "get_manifest", "uri": uri})
-                    response = await asyncio.wait_for(
-                        recv_msg(reader), timeout=DOWNLOAD_TIMEOUT
-                    )
-                    if response and response.get("type") == "manifest":
-                        remote_ts = response["manifest"].get("timestamp", 0)
-                        return remote_ts > local_ts
-                finally:
-                    writer.close()
-                    await writer.wait_closed()
-            except Exception:
-                continue
-
+                response = await recv_framed_json(stream, MAX_BUNDLE_MSG_SIZE)
+            finally:
+                await stream.close()
+            if response and response.get("type") == "manifest":
+                remote_ts = int(response["manifest"].get("timestamp", 0))
+                return remote_ts > local_ts
+        except Exception as e:
+            logger.warning("check_for_update failed: %s", e)
         return False
 
-    # ─── Seeder server ───────────────────────────────────────────────
+    # ─── Seeder handler ──────────────────────────────────────────────
 
-    async def _handle_peer_request(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
-        """Handle incoming requests from other peers."""
-        addr = writer.get_extra_info("peername")
+    async def _handle_bundle_request(self, stream: INetStream) -> None:
         try:
-            while not self._stopping:
-                msg = await recv_msg(reader)
-                if msg is None:
-                    break
-                msg_type = msg.get("type", "")
+            msg = await recv_framed_json(stream, MAX_BUNDLE_MSG_SIZE)
+            if msg is None:
+                return
+            msg_type = msg.get("type", "")
+            uri = msg.get("uri", "")
 
-                if msg_type == "get_bundle":
-                    uri = msg.get("uri", "")
-                    if uri in self.sites:
-                        logger.info(f"Sending bundle '{uri}' to {addr}")
-                        data = bundle_to_dict(self.sites[uri])
-                        data["type"] = "bundle"
-                        await send_msg(writer, data)
-                    else:
-                        await send_msg(
-                            writer,
-                            {"type": "error", "msg": f"Site '{uri}' not found"},
-                        )
+            if uri not in self.sites:
+                await _send_error(stream, f"site '{uri}' not found")
+                return
 
-                elif msg_type == "get_manifest":
-                    uri = msg.get("uri", "")
-                    if uri in self.sites:
-                        manifest, signature = load_bundle(self.sites[uri])
-                        await send_msg(
-                            writer,
-                            {
-                                "type": "manifest",
-                                "manifest": manifest,
-                                "signature": signature,
-                            },
-                        )
-                    else:
-                        await send_msg(
-                            writer,
-                            {"type": "error", "msg": f"Site '{uri}' not found"},
-                        )
-
-                else:
-                    await send_msg(
-                        writer, {"type": "error", "msg": f"Unknown: {msg_type}"}
-                    )
+            if msg_type == "get_bundle":
+                data = bundle_to_dict(self.sites[uri])
+                data["type"] = "bundle"
+                await send_framed_json(stream, data, MAX_BUNDLE_MSG_SIZE)
+            elif msg_type == "get_manifest":
+                manifest, signature = load_bundle(self.sites[uri])
+                await send_framed_json(
+                    stream,
+                    {
+                        "type": "manifest",
+                        "manifest": manifest,
+                        "signature": signature,
+                    },
+                    MAX_BUNDLE_MSG_SIZE,
+                )
+            else:
+                await _send_error(stream, f"unknown type: {msg_type}")
         except Exception as e:
-            logger.error(f"Peer error {addr}: {e}")
+            logger.exception("bundle handler error")
+            await _send_error(stream, f"internal error: {e}")
         finally:
-            writer.close()
-            await writer.wait_closed()
+            await stream.close()
 
-    async def start_seeding(self) -> asyncio.AbstractServer:
-        """Start the seeder server."""
-        self._server = await asyncio.start_server(
-            self._handle_peer_request, self.host, self.port
-        )
-        addrs = ", ".join(str(s.getsockname()) for s in self._server.sockets)
-        logger.info(f"Seeder listening on {addrs}")
-        if self.port == 0:
-            actual_port = self._server.sockets[0].getsockname()[1]
-            self.port = actual_port
-            logger.info(f"Auto-assigned port: {actual_port}")
-        return self._server
-
-    async def close(self) -> None:
-        """Gracefully close the seeder server."""
-        self._stopping = True
-        if self._server:
-            self._server.close()
-            await self._server.wait_closed()
-
-    def stop(self) -> None:
-        """Synchronous stop. Prefer close() in async code."""
-        self._stopping = True
-        if self._server:
-            self._server.close()
-
-    # ─── Markdown rendering (terminal) ─────────────────────────────────
+    # ─── Rendering (unchanged from the previous version) ─────────────
 
     def render_site(self, uri: str) -> str:
-        """Minimal text rendering of a site for the terminal."""
         if uri not in self.sites:
             return f"Site '{uri}' not found locally."
-
         site_dir = Path(self.sites[uri])
         manifest, _ = load_bundle(str(site_dir))
-        output = []
-        output.append(f"\n{'━' * 60}")
-        output.append(f"  md://{uri}")
-        output.append(
-            f"  {manifest['file_count']} pages — {manifest['total_size']} bytes"
-        )
-        output.append(f"  version {manifest['version']}")
-        output.append(f"{'━' * 60}\n")
-
+        output = [
+            f"\n{'━' * 60}",
+            f"  md://{uri}",
+            f"  {manifest['file_count']} pages — {manifest['total_size']} bytes",
+            f"  version {manifest['version']}",
+            f"{'━' * 60}\n",
+        ]
         for entry in manifest["files"]:
             fpath = validate_path(site_dir, entry["path"])
             content = fpath.read_text(encoding="utf-8")
@@ -410,5 +488,159 @@ class Peer:
             )
             output.append(content.strip())
             output.append(f"└{'─' * 50}┘\n")
-
         return "\n".join(output)
+
+
+async def _send_error(stream: INetStream, message: str) -> None:
+    try:
+        await send_framed_json(
+            stream, {"type": "error", "msg": message}, MAX_BUNDLE_MSG_SIZE
+        )
+    except Exception:
+        pass
+
+
+# ─── Lifecycle helpers ────────────────────────────────────────────────
+
+@asynccontextmanager
+async def run_peer(
+    data_dir: str = DEFAULT_DATA_DIR,
+    port: int = 0,
+    listen_host: str = "0.0.0.0",
+    peer_key_path: Optional[str] = None,
+    naming_info: Optional[PeerInfo] = None,
+    pinstore_path: str = DEFAULT_PINSTORE,
+    bootstrap_multiaddrs: Optional[list[str]] = None,
+    enable_dht: bool = True,
+    relay_mode: str = "none",
+    relay_multiaddrs: Optional[list[str]] = None,
+) -> AsyncIterator[Peer]:
+    """Run a Peer with a libp2p host, DHT, and optional Circuit Relay v2 stack.
+
+    - `bootstrap_multiaddrs` : peers dialed at startup; they seed the DHT
+      routing table so provide/find_providers have propagation targets.
+    - `enable_dht=False` disables the DHT entirely (useful for tests that
+      wire peers manually without discovery).
+    - `relay_mode` : one of
+        - "none" (default): no Circuit Relay services loaded
+        - "client": STOP + CLIENT roles. The peer can dial and accept
+          connections through a relay, and attempts DCUtR upgrades.
+        - "hop": full relay (HOP + STOP + CLIENT). For the peer-zero VPS.
+    - `relay_multiaddrs` : list of relay multiaddrs to dial at startup
+      (client mode only); RelayDiscovery will auto-reserve slots.
+    """
+    if relay_mode not in ("none", "client", "hop"):
+        raise ValueError(f"relay_mode must be 'none', 'client' or 'hop', got {relay_mode!r}")
+
+    data_path = Path(data_dir)
+    data_path.mkdir(parents=True, exist_ok=True)
+    key_path = peer_key_path or str(data_path / "peer.key")
+
+    seed = load_or_create_peer_seed(key_path)
+    host = new_host(key_pair=create_new_key_pair(seed))
+    listen = [multiaddr.Multiaddr(f"/ip4/{listen_host}/tcp/{port}")]
+
+    dht = KadDHT(host, DHTMode.SERVER) if enable_dht else None
+
+    async def _bootstrap_dht() -> None:
+        if dht is None:
+            return
+        for maddr in bootstrap_multiaddrs or []:
+            try:
+                info = info_from_p2p_addr(multiaddr.Multiaddr(maddr))
+                host.get_peerstore().add_addrs(info.peer_id, info.addrs, 3600)
+                await host.connect(info)
+                await dht.routing_table.add_peer(info.peer_id)
+                logger.info("bootstrapped DHT via %s", info.peer_id)
+            except Exception as e:
+                logger.warning("bootstrap to %s failed: %s", maddr, e)
+
+    async def _connect_relays() -> None:
+        for maddr in relay_multiaddrs or []:
+            try:
+                info = info_from_p2p_addr(multiaddr.Multiaddr(maddr))
+                host.get_peerstore().add_addrs(info.peer_id, info.addrs, 3600)
+                await host.connect(info)
+                logger.info("connected to relay %s", info.peer_id)
+            except Exception as e:
+                logger.warning("relay connect to %s failed: %s", maddr, e)
+
+    async with host.run(listen_addrs=listen), trio.open_nursery() as nursery:
+        nursery.start_soon(host.get_peerstore().start_cleanup_task, 60)
+
+        async with AsyncExitStack() as stack:
+            if dht is not None:
+                await stack.enter_async_context(background_trio_service(dht))
+
+            circuit_protocol: Optional[CircuitV2Protocol] = None
+            if relay_mode in ("client", "hop"):
+                limits = _default_relay_limits()
+                allow_hop = relay_mode == "hop"
+                circuit_protocol = CircuitV2Protocol(
+                    host, limits=limits, allow_hop=allow_hop
+                )
+                roles = RelayRole.STOP | RelayRole.CLIENT
+                if allow_hop:
+                    roles |= RelayRole.HOP
+                relay_config = RelayConfig(roles=roles, limits=limits)
+
+                host.set_stream_handler(
+                    HOP_PROTOCOL_ID, circuit_protocol._handle_hop_stream
+                )
+                host.set_stream_handler(
+                    STOP_PROTOCOL_ID, circuit_protocol._handle_stop_stream
+                )
+                await stack.enter_async_context(
+                    background_trio_service(circuit_protocol)
+                )
+
+                relay_transport = CircuitV2Transport(
+                    host, circuit_protocol, relay_config
+                )
+                if relay_mode == "client":
+                    discovery = RelayDiscovery(host, auto_reserve=True)
+                    relay_transport.discovery = discovery
+                    await stack.enter_async_context(background_trio_service(discovery))
+                    dcutr = DCUtRProtocol(host)
+                    await stack.enter_async_context(background_trio_service(dcutr))
+            else:
+                relay_transport = None
+
+            peer = Peer(
+                host,
+                data_dir=data_dir,
+                naming_info=naming_info,
+                pinstore_path=pinstore_path,
+                dht=dht,
+                relay_transport=relay_transport,
+            )
+            peer.attach()
+            await _bootstrap_dht()
+            await _connect_relays()
+
+            try:
+                yield peer
+            finally:
+                nursery.cancel_scope.cancel()
+
+
+async def link_peers_dht(*peers: Peer) -> None:
+    """Full-mesh the DHT routing tables of the given peers.
+
+    py-libp2p 0.6.0 doesn't auto-populate the routing table from inbound
+    connections, so peers that dial each other still need an explicit
+    add_peer call. This helper is mostly for tests and small deployments.
+    """
+    for a in peers:
+        for b in peers:
+            if a is b or a.dht is None or b.dht is None:
+                continue
+            b_id = b.host.get_id()
+            for addr in b.host.get_addrs():
+                a.host.get_peerstore().add_addrs(b_id, [addr], 3600)
+            try:
+                info = PeerInfo(b_id, list(b.host.get_addrs()))
+                await a.host.connect(info)
+            except Exception:
+                pass
+            await a.dht.routing_table.add_peer(b_id)

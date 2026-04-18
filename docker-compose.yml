@@ -1,24 +1,17 @@
 services:
-  tracker:
+  peer-zero:
     build: .
+    container_name: mdp2p-peer-zero
+    command: >
+      python peer_zero.py
+      --port 1707
+      --data-dir /var/lib/mdp2p/peer_zero
+      --listen-host 0.0.0.0
     ports:
       - "1707:1707"
-    depends_on:
-      redis:
-        condition: service_healthy
-    command: ["--port", "1707", "--redis-url", "redis://redis:6379"]
-    restart: unless-stopped
-
-  redis:
-    image: redis:7-alpine
     volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+      - peer_zero_data:/var/lib/mdp2p/peer_zero
     restart: unless-stopped
 
 volumes:
-  redis_data:
+  peer_zero_data:
