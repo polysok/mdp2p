@@ -21,6 +21,8 @@ RUN groupadd --gid 1000 mdp2p \
 
 COPY --from=builder /install /usr/local
 
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
 COPY --chown=mdp2p:mdp2p \
