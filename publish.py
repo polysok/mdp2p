@@ -20,7 +20,7 @@ from libp2p.peer.peerinfo import info_from_p2p_addr
 sys.path.insert(0, str(Path(__file__).parent))
 
 from bundle import generate_keypair, make_key_name
-from peer import run_peer
+from peer import detect_local_ip, run_peer
 
 
 async def main(
@@ -30,6 +30,7 @@ async def main(
     keys_dir: str,
     naming_multiaddr: str,
     port: int,
+    listen_host: str,
 ) -> None:
     keys_path = Path(keys_dir)
     keys_path.mkdir(parents=True, exist_ok=True)
@@ -49,6 +50,7 @@ async def main(
     async with run_peer(
         data_dir=f"./peer_data_{key_name}",
         port=port,
+        listen_host=listen_host,
         naming_info=naming_info,
     ) as peer:
         print(f"[PUBLISH] Peer ID      : {peer.host.get_id().to_string()}")
@@ -85,13 +87,35 @@ if __name__ == "__main__":
         default=0,
         help="Seeder port (0 = auto-assign, default: 0)",
     )
+    parser.add_argument(
+        "--listen-host",
+        default=None,
+        help=(
+            "Bind address (default: auto-detected LAN IP via UDP-connect "
+            "probe; pass 127.0.0.1 for fully local testing, or 0.0.0.0 only "
+            "on a public-IP host since 0.0.0.0 pollutes the DHT with "
+            "unreachable peer records)"
+        ),
+    )
     args = parser.parse_args()
+    if args.listen_host is None:
+        args.listen_host = detect_local_ip()
+        print(f"[PUBLISH] Auto-detected listen host: {args.listen_host}")
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(name)s] %(message)s",
         datefmt="%H:%M:%S",
     )
+    # Silence py-libp2p's internal retry noise on stale DHT peer records.
+    # These errors fire routinely for ghosts (peers that registered then
+    # went offline) and don't affect the local publish/fetch flow.
+    for noisy in (
+        "libp2p.transport.tcp",
+        "libp2p.kad_dht.peer_routing",
+        "libp2p.host.basic_host",
+    ):
+        logging.getLogger(noisy).setLevel(logging.CRITICAL)
 
     try:
         trio.run(
@@ -102,6 +126,7 @@ if __name__ == "__main__":
             args.keys,
             args.naming,
             args.port,
+            args.listen_host,
         )
     except KeyboardInterrupt:
         print("\n[PUBLISH] Stopped.")

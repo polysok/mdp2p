@@ -88,6 +88,26 @@ DEFAULT_DATA_DIR = "./peer_data"
 DEFAULT_PINSTORE = str(Path.home() / ".mdp2p" / "known_keys.json")
 
 
+def detect_local_ip() -> str:
+    """Best-effort detection of the primary LAN IPv4 of this machine.
+
+    Uses the UDP-connect trick: asks the kernel which interface it would
+    use to reach a public address, without actually sending any packet.
+    Falls back to ``127.0.0.1`` when no routable interface is available
+    (offline machine, container with no egress, etc.).
+    """
+    import socket
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        s.close()
+
+
 def _default_relay_limits() -> RelayLimits:
     """Conservative limits for a public peer-zero running as a relay.
 
@@ -259,12 +279,15 @@ class Peer:
         self,
         uri: str,
         seeder_addrs: Optional[list[str]] = None,
+        announce_after: bool = True,
     ) -> bool:
-        """Resolve via naming, download from a seeder, verify, and seed.
+        """Resolve via naming, download from a seeder, verify, and (optionally) seed.
 
-        If `seeder_addrs` is None or empty, the DHT is queried for providers.
-        Passing an explicit list bypasses discovery (useful for tests or
-        bootstrap situations where the DHT is unreachable).
+        - `seeder_addrs` : if None or empty, the DHT is queried for providers.
+          Passing an explicit list bypasses discovery.
+        - `announce_after` : default True, preserves the "every visitor becomes
+          a seeder" mdp2p principle. Pass False for short-lived visitors so
+          they do not leave ghost provider records in the DHT on exit.
         """
         validate_uri(uri)
         if self.naming_info is None:
@@ -356,8 +379,11 @@ class Peer:
             manifest["file_count"],
             manifest["total_size"],
         )
-        # Join the swarm: announce ourselves as a provider.
-        await self.announce(uri)
+        # Join the swarm: announce ourselves as a provider (unless the
+        # caller opted out — useful for one-shot visitors that would
+        # otherwise leave stale records in the DHT on exit).
+        if announce_after:
+            await self.announce(uri)
         return True
 
     async def _try_download_from_seeders(
@@ -506,7 +532,7 @@ async def _send_error(stream: INetStream, message: str) -> None:
 async def run_peer(
     data_dir: str = DEFAULT_DATA_DIR,
     port: int = 0,
-    listen_host: str = "0.0.0.0",
+    listen_host: Optional[str] = None,
     peer_key_path: Optional[str] = None,
     naming_info: Optional[PeerInfo] = None,
     pinstore_path: str = DEFAULT_PINSTORE,
@@ -528,9 +554,16 @@ async def run_peer(
         - "hop": full relay (HOP + STOP + CLIENT). For the peer-zero VPS.
     - `relay_multiaddrs` : list of relay multiaddrs to dial at startup
       (client mode only); RelayDiscovery will auto-reserve slots.
+    - `listen_host` : bind address. Defaults to the auto-detected LAN IP
+      (see detect_local_ip) to avoid polluting the DHT with ``0.0.0.0``
+      peer records. Public hosts (the peer-zero VPS) should explicitly
+      pass ``"0.0.0.0"`` to accept connections from anywhere.
     """
     if relay_mode not in ("none", "client", "hop"):
         raise ValueError(f"relay_mode must be 'none', 'client' or 'hop', got {relay_mode!r}")
+
+    if listen_host is None:
+        listen_host = detect_local_ip()
 
     data_path = Path(data_dir)
     data_path.mkdir(parents=True, exist_ok=True)

@@ -7,4 +7,10 @@ build/
 .env
 *.key
 demo_data/
+demo_run/
 peer_data*/
+peer_zero_data/
+fetch_data/
+keys/
+root/
+.DS_Store

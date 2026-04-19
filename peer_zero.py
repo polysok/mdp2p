@@ -84,6 +84,13 @@ def main() -> None:
         format="%(asctime)s [PEER0] %(message)s",
         datefmt="%H:%M:%S",
     )
+    # Silence py-libp2p's internal retry noise on stale DHT peer records.
+    for noisy in (
+        "libp2p.transport.tcp",
+        "libp2p.kad_dht.peer_routing",
+        "libp2p.host.basic_host",
+    ):
+        logging.getLogger(noisy).setLevel(logging.CRITICAL)
 
     try:
         trio.run(serve, args.port, args.data_dir, args.listen_host)
