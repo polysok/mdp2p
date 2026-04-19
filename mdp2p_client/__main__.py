@@ -830,6 +830,11 @@ async def main():
 
     subparsers.add_parser("status", help="Show client status")
 
+    subparsers.add_parser(
+        "tui",
+        help="Open the Textual TUI reader (requires the [tui] extra)",
+    )
+
     args = parser.parse_args()
     config = ClientConfig.load()
 
@@ -850,6 +855,17 @@ async def main():
         return 0
     elif args.command == "unpin":
         return cli_unpin(args.uri)
+    elif args.command == "tui":
+        try:
+            from .tui import run as run_tui
+        except ImportError as e:
+            print(
+                f"  {c.RED}TUI dependencies missing: {e}{c.RESET}\n"
+                f"  {c.DIM}Install with: pip install -e \".[tui]\"{c.RESET}"
+            )
+            return 1
+        run_tui()
+        return 0
 
     if config is None:
         print(f"  {c.RED}{t('error_not_configured')}{c.RESET}")
