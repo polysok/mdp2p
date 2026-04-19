@@ -255,15 +255,39 @@ class Peer:
             return False
 
     async def find_providers(self, uri: str, author_pub_b64: str) -> list[str]:
-        """Return multiaddr strings of peers advertising `uri` in the DHT."""
+        """Return multiaddr strings of peers advertising `uri` in the DHT.
+
+        Optimistic fast-path: if a naming server is configured, we ask it
+        directly via a single DHT GetProviders request instead of paying
+        for py-libp2p's full iterative Kademlia lookup (which can drag on
+        for tens of seconds when the peer-zero's routing table contains
+        dead peers from old test runs). In mdp2p the naming server always
+        doubles as the DHT hub — any live provider record is either there
+        or doesn't exist anywhere.
+        """
         if self.dht is None:
             return []
-        key = compute_content_key(uri, author_pub_b64)
-        try:
-            providers = await self.dht.find_providers(key)
-        except Exception as e:
-            logger.warning("dht.find_providers for %s raised: %s", uri, e)
-            return []
+        key_bytes = compute_content_key(uri, author_pub_b64).encode()
+
+        providers = []
+        if self.naming_info is not None:
+            try:
+                providers = await self.dht.provider_store._get_providers_from_peer(
+                    self.naming_info.peer_id, key_bytes
+                )
+            except Exception as e:
+                logger.warning(
+                    "fast-path provider query failed for %s: %s — falling back",
+                    uri, e,
+                )
+
+        if not providers:
+            try:
+                providers = await self.dht.find_providers(key_bytes.decode())
+            except Exception as e:
+                logger.warning("dht.find_providers for %s raised: %s", uri, e)
+                return []
+
         self_id = self.host.get_id()
         addrs: list[str] = []
         for info in providers:
