@@ -66,7 +66,7 @@ Dockerfile).
 docker compose up -d
 ```
 
-The `peer-zero` service exposes on port **443** (internal container port 1707 republished on 443 externally, to traverse ISP DPI and port filters):
+The `peer-zero` service exposes on port 1707:
   - the naming protocol `/mdp2p/naming/1.0.0`
   - Circuit Relay v2 (HOP) for NAT'd peers
   - a DHT entry point for newcomers
@@ -79,14 +79,14 @@ The PeerID is persisted via a `peer_zero_data` volume.
 python publish.py \
     --uri blog --author alice \
     --site ./my_site \
-    --naming /dns4/relay.mdp2p.net/tcp/443/p2p/<PEER_ZERO_ID>
+    --naming /dns4/relay.mdp2p.net/tcp/1707/p2p/<PEER_ZERO_ID>
 ```
 
 ### Interactive client
 
 ```bash
 mdp2p setup --author alice \
-    --naming /dns4/relay.mdp2p.net/tcp/443/p2p/<PEER_ZERO_ID>
+    --naming /dns4/relay.mdp2p.net/tcp/1707/p2p/<PEER_ZERO_ID>
 mdp2p                    # interactive mode
 mdp2p publish --uri blog --site ./my_site
 mdp2p browse
