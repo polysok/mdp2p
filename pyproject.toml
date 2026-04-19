@@ -9,9 +9,9 @@ description = "MDP2P — Decentralized Markdown peer-to-peer publishing"
 requires-python = ">=3.10"
 dependencies = [
     "cryptography>=42.0.0",
-    "libp2p>=0.6.0",
-    "trio>=0.27.0",
-    "multiaddr>=0.0.9",
+    "libp2p==0.6.0",
+    "trio==0.33.0",
+    "multiaddr==0.0.11",
 ]
 
 [project.optional-dependencies]
