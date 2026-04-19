@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from . import colors as c
 from .commands import (
     cli_browse,
+    cli_fetch,
     cli_list,
     cli_pins,
     cli_publish,
@@ -44,6 +45,15 @@ def _build_parser() -> argparse.ArgumentParser:
     publish_parser = subparsers.add_parser("publish", help="Publish a new site")
     publish_parser.add_argument("--uri", required=True, help="Site URI (e.g., md://blog)")
     publish_parser.add_argument("--site", required=True, help="Directory containing .md files")
+
+    fetch_parser = subparsers.add_parser(
+        "fetch", help="Download a site from the network"
+    )
+    fetch_parser.add_argument("--uri", required=True, help="Site URI (e.g., md://blog)")
+    fetch_parser.add_argument(
+        "--naming",
+        help="Override the configured naming multiaddr (optional)",
+    )
 
     remove_parser = subparsers.add_parser("remove", help="Remove a seeded site")
     remove_parser.add_argument("uri", help="Site URI to remove")
@@ -118,6 +128,8 @@ async def main() -> int:
         return await cli_browse(config)
     if args.command == "publish":
         return await cli_publish(config, args.uri, args.site)
+    if args.command == "fetch":
+        return await cli_fetch(config, args.uri, args.naming)
     if args.command == "remove":
         return await cli_remove(config, args.uri)
     if args.command == "status":

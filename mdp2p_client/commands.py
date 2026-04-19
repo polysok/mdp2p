@@ -15,6 +15,7 @@ from .config import ClientConfig, ensure_config, get_seeded_sites
 from .formatting import format_size, strip_uri_scheme
 from .i18n import SUPPORTED_LANGUAGES, load_language, t
 from .permissions import fix_permissions
+from .fetch_flow import do_fetch
 from .publish_flow import do_publish, get_pinstore_path, list_registered_sites
 from .ui import print_browse_table, print_pins_table, print_seeds_table
 
@@ -84,6 +85,24 @@ async def cli_publish(config: ClientConfig, uri: str, site_dir: str) -> int:
             print(f"\n  {c.RED}{t('add_error', error=e)}{c.RESET}")
             return 1
 
+    return 1
+
+
+async def cli_fetch(
+    config: ClientConfig, uri: str, naming: Optional[str] = None
+) -> int:
+    """CLI: Download a site from the network."""
+    bare = strip_uri_scheme(uri)
+    try:
+        ok = await do_fetch(config, uri, naming_multiaddr=naming)
+    except Exception as e:
+        print(f"  {c.RED}fetch failed: {e}{c.RESET}")
+        return 1
+
+    if ok:
+        print(f"  {c.GREEN}md://{bare} fetched ✓{c.RESET}")
+        return 0
+    print(f"  {c.RED}fetch failed for md://{bare}{c.RESET}")
     return 1
 
 

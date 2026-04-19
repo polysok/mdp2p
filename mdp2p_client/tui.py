@@ -58,7 +58,6 @@ from mdp2p_client.formatting import format_size
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-FETCH_SCRIPT = PROJECT_ROOT / "fetch.py"
 DEFAULT_PINSTORE = str(DEFAULT_CONFIG_DIR / "known_keys.json")
 
 
@@ -429,25 +428,23 @@ class Mdp2pTUI(App[None]):
 
     @work(thread=True, exclusive=True, group="fetch")
     def _run_fetch(self, uri: str, naming_maddr: str) -> None:
-        """Delegate to the standalone fetch.py CLI in a subprocess.
+        """Delegate fetching to `mdp2p fetch` in a subprocess.
 
-        Shelling out is deliberate: fetch.py is the single source of truth
-        for the fetch pipeline (naming resolve → DHT lookup → download →
-        verify → TOFU pin). Reimplementing it inline in the TUI led to
-        divergent behaviour (different timeouts, missed fixes, silent
-        failures). One process boundary, one test surface.
+        Same rationale as `_run_publish`: one process boundary isolates
+        the libp2p + DHT machinery from the TUI event loop. `sys.frozen`
+        picks the bundled binary in a PyInstaller release, and falls
+        back to `python -m mdp2p_client` from source.
         """
         import subprocess
         import sys as _sys
 
-        cmd = [
-            _sys.executable,
-            str(FETCH_SCRIPT),
-            "--uri", uri,
-            "--naming", naming_maddr,
-            "--data-dir", str(self.config.data_dir),
-            "--pinstore", DEFAULT_PINSTORE,
-        ]
+        if getattr(_sys, "frozen", False):
+            cmd = [_sys.executable, "fetch", "--uri", uri, "--naming", naming_maddr]
+        else:
+            cmd = [
+                _sys.executable, "-m", "mdp2p_client",
+                "fetch", "--uri", uri, "--naming", naming_maddr,
+            ]
         try:
             result = subprocess.run(
                 cmd,
