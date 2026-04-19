@@ -28,9 +28,6 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import multiaddr
-import trio
-from libp2p.peer.peerinfo import info_from_p2p_addr
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -55,10 +52,12 @@ from mdp2p_client.config import (
     ClientConfig,
     SeededSite,
     get_seeded_sites,
+    load_or_create_config,
 )
-from peer import run_peer
 
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+FETCH_SCRIPT = PROJECT_ROOT / "fetch.py"
 DEFAULT_PINSTORE = str(DEFAULT_CONFIG_DIR / "known_keys.json")
 
 
@@ -266,13 +265,19 @@ class Mdp2pTUI(App[None]):
         return "no naming server configured"
 
     def _welcome_markdown(self) -> str:
+        naming = self.config.naming_multiaddr or "—"
+        host = naming.split("/")[2] if naming.startswith(("/dns4/", "/ip4/")) else naming[:40]
         return (
-            "# Welcome to mdp2p\n\n"
+            f"# Welcome, **{self.config.author}**\n\n"
+            f"Connected to `{host}` — browse any site other peers have "
+            "published on the network.\n\n"
+            "## What you can do\n\n"
             "- Pick a site in the sidebar, or\n"
-            "- Press **`f`** to fetch a new URI, or\n"
-            "- Press **`/`** to search your local sites.\n\n"
+            "- Press **`f`** to fetch a new URI by name\n"
+            "- Press **`/`** to search your locally cached sites\n"
+            "- Press **`r`** to refresh the list, **`q`** to quit\n\n"
             "---\n\n"
-            f"*Data dir:* `{self.config.data_dir}`\n"
+            f"*Local cache:* `{self.config.data_dir}`\n"
         )
 
     def _load_sites(self) -> None:
@@ -351,45 +356,75 @@ class Mdp2pTUI(App[None]):
     def action_focus_list(self) -> None:
         self.query_one("#sites", ListView).focus()
 
-    async def action_fetch(self) -> None:
-        result = await self.push_screen_wait(
-            FetchModal(default_naming=self.config.naming_multiaddr)
+    def action_fetch(self) -> None:
+        def _handle(result: tuple[str, str] | None) -> None:
+            if result is None:
+                return
+            uri, naming_maddr = result
+            self.notify(f"Fetching md://{uri}…", timeout=3)
+            self._run_fetch(uri, naming_maddr)
+
+        self.push_screen(
+            FetchModal(default_naming=self.config.naming_multiaddr),
+            callback=_handle,
         )
-        if result is None:
-            return
-        uri, naming_maddr = result
-        self.notify(f"Fetching md://{uri}…", timeout=3)
-        self._run_fetch(uri, naming_maddr)
 
     @work(thread=True, exclusive=True, group="fetch")
     def _run_fetch(self, uri: str, naming_maddr: str) -> None:
-        async def fetch_once() -> bool:
-            naming_info = info_from_p2p_addr(multiaddr.Multiaddr(naming_maddr))
-            async with run_peer(
-                data_dir=str(self.config.data_dir),
-                port=0,
-                naming_info=naming_info,
-                pinstore_path=DEFAULT_PINSTORE,
-                bootstrap_multiaddrs=[naming_maddr],
-            ) as peer:
-                return await peer.fetch_site(uri, announce_after=False)
+        """Delegate to the standalone fetch.py CLI in a subprocess.
 
+        Shelling out is deliberate: fetch.py is the single source of truth
+        for the fetch pipeline (naming resolve → DHT lookup → download →
+        verify → TOFU pin). Reimplementing it inline in the TUI led to
+        divergent behaviour (different timeouts, missed fixes, silent
+        failures). One process boundary, one test surface.
+        """
+        import subprocess
+        import sys as _sys
+
+        cmd = [
+            _sys.executable,
+            str(FETCH_SCRIPT),
+            "--uri", uri,
+            "--naming", naming_maddr,
+            "--data-dir", str(self.config.data_dir),
+            "--pinstore", DEFAULT_PINSTORE,
+        ]
         try:
-            ok = trio.run(fetch_once)
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                cwd=str(PROJECT_ROOT),
+                timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            self.call_from_thread(
+                self.notify,
+                f"md://{uri}: fetch timed out after 60s",
+                severity="error",
+                timeout=10,
+            )
+            return
         except Exception as e:
             self.call_from_thread(
-                self.notify, f"fetch failed: {e}", severity="error"
+                self.notify, f"fetch failed: {e}", severity="error", timeout=10
             )
             return
 
-        if ok:
+        if result.returncode == 0:
             self.call_from_thread(
                 self.notify, f"md://{uri} fetched ✓", severity="information"
             )
             self.call_from_thread(self._load_sites)
         else:
+            tail = (result.stderr or result.stdout).strip().splitlines()
+            reason = tail[-1] if tail else f"exit code {result.returncode}"
             self.call_from_thread(
-                self.notify, f"md://{uri} not fetched", severity="warning"
+                self.notify,
+                f"md://{uri}: {reason}",
+                severity="warning",
+                timeout=10,
             )
 
 
@@ -404,7 +439,7 @@ def run() -> None:
     ):
         logging.getLogger(noisy).setLevel(logging.CRITICAL)
 
-    config = ClientConfig.load() or ClientConfig(author="anonymous")
+    config = load_or_create_config()
     Mdp2pTUI(config=config).run()
 
 

@@ -4,6 +4,7 @@ MDP2P Client Config — Configuration management for the MDP2P client.
 Stores author identity, naming-server address, bootstrap peers, and local seeding data.
 """
 
+import getpass
 import json
 import os
 import shutil
@@ -15,6 +16,15 @@ from typing import Optional
 DEFAULT_CONFIG_DIR = Path.home() / ".mdp2p"
 DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.json"
 DEFAULT_DATA_DIR = DEFAULT_CONFIG_DIR / "sites"
+
+# Public peer-zero shipped with the project. Users fetching without any
+# explicit configuration reach the official relay out of the box. The /ip4/
+# form is used rather than /dns4/ because py-libp2p 0.6.0's dial stack
+# does not resolve /dns4/ transparently.
+DEFAULT_NAMING_MULTIADDR = (
+    "/ip4/51.254.137.250/tcp/1707/p2p/"
+    "12D3KooWRSKoy3xrMFQGmcnkYH7mgwUhvH8jqeiKSNsrKov5B6jW"
+)
 
 
 @dataclass
@@ -134,3 +144,45 @@ def ensure_config(config: Optional[ClientConfig] = None) -> ClientConfig:
     Path(config.data_dir).mkdir(parents=True, exist_ok=True)
 
     return config
+
+
+def _default_author() -> str:
+    try:
+        return getpass.getuser()
+    except Exception:
+        return os.environ.get("USER") or "anonymous"
+
+
+def load_or_create_config(path: Optional[Path] = None) -> ClientConfig:
+    """Return the saved config, or create sensible defaults on first run.
+
+    The TUI calls this so a lambda user can launch the reader without
+    running `mdp2p setup` first. An existing config with a blank
+    naming_multiaddr is back-filled with the default so upgrades from
+    earlier versions work too.
+    """
+    path = path or DEFAULT_CONFIG_FILE
+    try:
+        cfg = ClientConfig.load(path)
+    except Exception:
+        cfg = None
+
+    if cfg is not None:
+        if not cfg.naming_multiaddr:
+            cfg.naming_multiaddr = DEFAULT_NAMING_MULTIADDR
+            try:
+                cfg.save(path)
+            except Exception:
+                pass
+        return cfg
+
+    cfg = ClientConfig(
+        author=_default_author(),
+        naming_multiaddr=DEFAULT_NAMING_MULTIADDR,
+    )
+    cfg = ensure_config(cfg)
+    try:
+        cfg.save(path)
+    except Exception:
+        pass
+    return cfg

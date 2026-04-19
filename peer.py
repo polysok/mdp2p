@@ -300,7 +300,10 @@ class Peer:
 
         record = resp["record"]
         record_sig = resp["signature"]
-        ok, err = verify_name_record(record, record_sig)
+        # Skip the drift check at read time: the naming server already
+        # enforces monotonic + fresh timestamps at register time, so a
+        # legitimately-stored record stays valid after the drift window.
+        ok, err = verify_name_record(record, record_sig, max_drift=None)
         if not ok:
             logger.error("naming record signature invalid for %s: %s", uri, err)
             return False
