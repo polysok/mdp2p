@@ -46,6 +46,7 @@ from textual.widgets import (
 )
 
 from bundle import load_bundle
+from mdp2p_client import service as svc
 from mdp2p_client.config import (
     DEFAULT_CONFIG_DIR,
     DEFAULT_DATA_DIR,
@@ -235,6 +236,50 @@ class PublishModal(ModalScreen[tuple[str, str] | None]):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+
+# ─── Auto-seed confirmation modal ──────────────────────────────────────
+
+class AutoSeedModal(ModalScreen[bool]):
+    """One-shot offer to install the auto-seeder background service."""
+
+    CSS = """
+    AutoSeedModal { align: center middle; }
+    #dialog {
+        width: 72;
+        height: auto;
+        background: $panel;
+        border: tall $warning;
+        padding: 1 2;
+    }
+    #dialog > Label { padding: 0 1; }
+    #buttons { layout: horizontal; height: auto; align-horizontal: right; }
+    #buttons > Button { margin-left: 1; }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Skip")]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Label("[b]Keep your sites online?[/]")
+            yield Label(
+                "Your sites are only reachable on the P2P network while an "
+                "mdp2p process is running."
+            )
+            yield Label(
+                "Install a background service so seeding starts automatically "
+                "at login?"
+            )
+            yield Label("")
+            with Horizontal(id="buttons"):
+                yield Button("Skip", variant="default", id="skip")
+                yield Button("Enable", variant="primary", id="ok")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "ok")
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
 
 
 # ─── Main app ───────────────────────────────────────────────────────────
@@ -472,6 +517,7 @@ class Mdp2pTUI(App[None]):
                 self.notify, f"md://{uri} fetched ✓", severity="information"
             )
             self.call_from_thread(self._load_sites)
+            self.call_from_thread(self._maybe_offer_auto_seed)
         else:
             tail = (result.stderr or result.stdout).strip().splitlines()
             reason = tail[-1] if tail else f"exit code {result.returncode}"
@@ -565,6 +611,7 @@ class Mdp2pTUI(App[None]):
                 self.notify, f"md://{uri} published ✓", severity="information"
             )
             self.call_from_thread(self._load_sites)
+            self.call_from_thread(self._maybe_offer_auto_seed)
         else:
             tail = (result.stderr or result.stdout).strip().splitlines()
             reason = tail[-1] if tail else f"exit code {result.returncode}"
@@ -573,6 +620,68 @@ class Mdp2pTUI(App[None]):
                 f"md://{uri}: {reason}",
                 severity="warning",
                 timeout=10,
+            )
+
+    # ── auto-seed one-shot offer ──────────────────────────────────
+
+    def _maybe_offer_auto_seed(self) -> None:
+        """Pop the auto-seed modal the first time a publish/fetch succeeds."""
+        # Re-read config from disk: subprocess invocations (publish/fetch) may
+        # have flipped auto_seed_prompted while we were waiting on them.
+        try:
+            fresh = ClientConfig.load()
+            if fresh is not None:
+                self.config = fresh
+        except Exception:
+            pass
+
+        if not svc.should_offer(self.config):
+            return
+
+        def _handle(accepted: bool | None) -> None:
+            self.config.auto_seed_prompted = True
+            try:
+                self.config.save()
+            except Exception:
+                pass
+            if accepted:
+                self.notify("Installing auto-seeder service…", timeout=3)
+                self._install_service()
+
+        self.push_screen(AutoSeedModal(), callback=_handle)
+
+    @work(thread=True, exclusive=True, group="service")
+    def _install_service(self) -> None:
+        """Run `mdp2p service install` in a worker thread."""
+        import subprocess
+        import sys as _sys
+
+        if getattr(_sys, "frozen", False):
+            cmd = [_sys.executable, "service", "install"]
+        else:
+            cmd = [_sys.executable, "-m", "mdp2p_client", "service", "install"]
+
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=30
+            )
+        except Exception as e:
+            self.call_from_thread(
+                self.notify, f"service install failed: {e}",
+                severity="error", timeout=10,
+            )
+            return
+
+        if result.returncode == 0:
+            self.call_from_thread(
+                self.notify, "Auto-seeder enabled ✓", severity="information"
+            )
+        else:
+            tail = (result.stderr or result.stdout).strip().splitlines()
+            reason = tail[-1] if tail else f"exit code {result.returncode}"
+            self.call_from_thread(
+                self.notify, f"service install: {reason}",
+                severity="warning", timeout=10,
             )
 
 

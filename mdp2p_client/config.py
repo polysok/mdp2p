@@ -38,6 +38,7 @@ class ClientConfig:
     data_dir: str = str(DEFAULT_DATA_DIR)
     port: int = 0
     language: str = "fr"
+    auto_seed_prompted: bool = False
 
     def save(self, path: Optional[Path] = None):
         """Save configuration to file."""

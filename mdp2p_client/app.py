@@ -23,6 +23,8 @@ from .commands import (
     cli_pins,
     cli_publish,
     cli_remove,
+    cli_serve,
+    cli_service,
     cli_setup,
     cli_status,
     cli_unpin,
@@ -55,6 +57,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Override the configured naming multiaddr (optional)",
     )
 
+    subparsers.add_parser("serve", help="Run as a seeder daemon (foreground)")
+
     remove_parser = subparsers.add_parser("remove", help="Remove a seeded site")
     remove_parser.add_argument("uri", help="Site URI to remove")
 
@@ -76,6 +80,15 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "tui",
         help="Open the Textual TUI reader (requires the [tui] extra)",
+    )
+
+    service_parser = subparsers.add_parser(
+        "service", help="Manage the mdp2p seeder as a user service"
+    )
+    service_parser.add_argument(
+        "action",
+        choices=["install", "uninstall", "status"],
+        help="What to do with the service",
     )
 
     return parser
@@ -112,6 +125,10 @@ async def main() -> int:
             return 1
         run_tui()
         return 0
+    if args.command == "service":
+        # Intentionally works without a loaded config so a fresh install can
+        # run `mdp2p service status` before `mdp2p setup`.
+        return cli_service(args.action, config)
 
     # Remaining commands need a valid config.
     if config is None:
@@ -130,6 +147,8 @@ async def main() -> int:
         return await cli_publish(config, args.uri, args.site)
     if args.command == "fetch":
         return await cli_fetch(config, args.uri, args.naming)
+    if args.command == "serve":
+        return await cli_serve(config)
     if args.command == "remove":
         return await cli_remove(config, args.uri)
     if args.command == "status":

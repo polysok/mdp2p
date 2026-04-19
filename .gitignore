@@ -17,3 +17,4 @@ root/
 # PyInstaller build output
 *.spec.bak
 
+.claude/scheduled_tasks.lock

@@ -5,18 +5,23 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-# Root-level modules (pinstore) live one directory up.
+import trio
+
+# Root-level modules (pinstore, mdp2p_logging) live one directory up.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from mdp2p_logging import silence_libp2p_noise
 from pinstore import load_pinstore, unpin_key
 
 from . import colors as c
+from . import service as svc
 from .config import ClientConfig, ensure_config, get_seeded_sites
 from .formatting import format_size, strip_uri_scheme
 from .i18n import SUPPORTED_LANGUAGES, load_language, t
 from .permissions import fix_permissions
 from .fetch_flow import do_fetch
-from .publish_flow import do_publish, get_pinstore_path, list_registered_sites
+from .publish_flow import do_publish, get_pinstore_path, list_registered_sites, require_naming
+from .serve_flow import do_serve
 from .ui import print_browse_table, print_pins_table, print_seeds_table
 
 
@@ -75,6 +80,7 @@ async def cli_publish(config: ClientConfig, uri: str, site_dir: str) -> int:
         try:
             await do_publish(config, uri, site_path)
             print(f"\n  {c.GREEN}{c.BOLD}{t('add_success')}{c.RESET}")
+            svc.offer_interactive(config)
             return 0
         except PermissionError as e:
             if attempt == 0 and fix_permissions(e):
@@ -101,6 +107,7 @@ async def cli_fetch(
 
     if ok:
         print(f"  {c.GREEN}md://{bare} fetched ✓{c.RESET}")
+        svc.offer_interactive(config)
         return 0
     print(f"  {c.RED}fetch failed for md://{bare}{c.RESET}")
     return 1
@@ -172,6 +179,94 @@ def cli_setup(
             print(f"\n  {c.RED}{t('add_error', error=e)}{c.RESET}")
             return 1
 
+    return 1
+
+
+async def cli_serve(config: ClientConfig) -> int:
+    """CLI: Run as a long-running seeder daemon (foreground)."""
+    silence_libp2p_noise()
+
+    # Service managers (launchd, systemd, Task Scheduler) send SIGTERM to stop
+    # the process. Trio only hooks SIGINT, so re-route SIGTERM onto SIGINT so
+    # the host closes its streams gracefully instead of being hard-killed.
+    import os
+    import signal as _signal
+    _signal.signal(_signal.SIGTERM, lambda *_: os.kill(os.getpid(), _signal.SIGINT))
+
+    site_count = len(get_seeded_sites(config.data_dir))
+
+    print(f"\n  {c.BOLD}{c.CYAN}── MDP2P Seeder ──{c.RESET}\n")
+    print(f"  {c.BOLD}Naming{c.RESET}   : {require_naming(config)}")
+    print(f"  {c.BOLD}Data dir{c.RESET} : {c.DIM}{config.data_dir}{c.RESET}")
+    print(f"  {c.BOLD}Sites{c.RESET}    : {site_count}")
+    print()
+
+    try:
+        await do_serve(config)
+        # do_serve only returns once the peer is fully shut down. run_peer's
+        # finally explicitly cancels its own scope, which absorbs the Cancelled
+        # raised by SIGINT/SIGTERM — so the normal return path IS the graceful
+        # shutdown path. Anything raising out of do_serve is a real error.
+        print(f"\n  {c.DIM}Seeder stopped.{c.RESET}")
+        return 0
+    except Exception as e:
+        print(f"\n  {c.RED}Seeder error: {e}{c.RESET}")
+        return 1
+
+
+def _fmt_bool(value: bool) -> str:
+    """Colorize a boolean for status output."""
+    return f"{c.GREEN}yes{c.RESET}" if value else f"{c.YELLOW}no{c.RESET}"
+
+
+def cli_service(action: str, config: Optional[ClientConfig]) -> int:
+    """CLI: Manage the mdp2p seeder as a user-level auto-starting service."""
+    platform = svc.get_platform()
+
+    if platform == "unsupported":
+        print(
+            f"  {c.RED}Unsupported platform for automated service install.{c.RESET}\n"
+            f"  {c.DIM}Fallback: run `mdp2p serve` inside tmux or screen.{c.RESET}"
+        )
+        return 1
+
+    if action == "status":
+        info = svc.status()
+        print(f"\n  {c.BOLD}{c.CYAN}── MDP2P Service ──{c.RESET}\n")
+        print(f"  {c.BOLD}{'Platform':<12}{c.RESET} : {info['platform']}")
+        print(f"  {c.BOLD}{'Installed':<12}{c.RESET} : {_fmt_bool(info['installed'])}")
+        print(f"  {c.BOLD}{'Running':<12}{c.RESET} : {_fmt_bool(info['running'])}")
+        path = info.get("path") or "—"
+        print(f"  {c.BOLD}{'Path':<12}{c.RESET} : {c.DIM}{path}{c.RESET}")
+        details = info.get("details") or ""
+        if details:
+            print(f"  {c.BOLD}{'Details':<12}{c.RESET} : {c.DIM}{details}{c.RESET}")
+        return 0
+
+    if action == "install":
+        ok, path, message = svc.install()
+        if ok:
+            print(f"  {c.GREEN}{message}{c.RESET}")
+            if path:
+                print(f"  {c.DIM}Unit file: {path}{c.RESET}")
+            print(f"  {c.DIM}Check status with: mdp2p service status{c.RESET}")
+            print(f"  {c.DIM}Remove with:       mdp2p service uninstall{c.RESET}")
+            return 0
+        print(f"  {c.RED}Install failed.{c.RESET}")
+        if path:
+            print(f"  {c.DIM}Unit file path: {path}{c.RESET}")
+        print(f"  {c.YELLOW}{message}{c.RESET}")
+        return 1
+
+    if action == "uninstall":
+        ok, message = svc.uninstall()
+        if ok:
+            print(f"  {c.GREEN}{message}{c.RESET}")
+            return 0
+        print(f"  {c.RED}{message}{c.RESET}")
+        return 1
+
+    print(f"  {c.RED}Unknown action: {action}{c.RESET}")
     return 1
 
 
