@@ -1,0 +1,107 @@
+name: Build & release binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      draft_release:
+        description: "Also create a draft GitHub release with the artifacts"
+        default: "false"
+        required: false
+
+jobs:
+  build:
+    name: ${{ matrix.artifact }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            artifact: mdp2p-linux-x86_64
+            ext: ""
+          - os: macos-13
+            artifact: mdp2p-macos-x86_64
+            ext: ""
+          - os: macos-14
+            artifact: mdp2p-macos-arm64
+            ext: ""
+          - os: windows-latest
+            artifact: mdp2p-windows-x86_64
+            ext: ".exe"
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # GMP is required by fastecdsa (transitive dep of py-libp2p). The
+      # README documents the same prerequisite for local development.
+      - name: Install GMP (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install gmp
+          echo "CFLAGS=-I$(brew --prefix gmp)/include" >> "$GITHUB_ENV"
+          echo "LDFLAGS=-L$(brew --prefix gmp)/lib" >> "$GITHUB_ENV"
+
+      - name: Install GMP (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgmp-dev build-essential
+
+      - name: Install project + PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[tui]"
+          pip install pyinstaller
+
+      - name: Quick sanity — tests still pass
+        run: pip install pytest pytest-trio && pytest tests/ -q
+
+      - name: Build binary
+        run: pyinstaller packaging/mdp2p.spec --clean --noconfirm
+
+      - name: Rename binary for release
+        shell: bash
+        run: |
+          mv "dist/mdp2p${{ matrix.ext }}" "dist/${{ matrix.artifact }}${{ matrix.ext }}"
+          ls -lh "dist/${{ matrix.artifact }}${{ matrix.ext }}"
+
+      - name: Smoke-test binary
+        shell: bash
+        run: "dist/${{ matrix.artifact }}${{ matrix.ext }} --help"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}${{ matrix.ext }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.draft_release == 'true'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List release assets
+        run: ls -lh dist
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          draft: ${{ inputs.draft_release == 'true' && !startsWith(github.ref, 'refs/tags/v') }}

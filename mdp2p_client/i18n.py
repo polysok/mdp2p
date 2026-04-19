@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+SUPPORTED_LANGUAGES: list[str] = ["fr", "en", "zh", "ar", "hi"]
+
 _LOCALES_DIR = Path(__file__).parent / "locales"
 _translations: dict[str, str] = {}
 _current_lang: str = "fr"

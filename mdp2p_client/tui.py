@@ -54,6 +54,7 @@ from mdp2p_client.config import (
     get_seeded_sites,
     load_or_create_config,
 )
+from mdp2p_client.formatting import format_size
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -116,14 +117,6 @@ def _assemble_markdown(site_dir: str) -> str:
         parts.append("\n")
 
     return "".join(parts) or "_(empty site)_"
-
-
-def _format_size(n: int) -> str:
-    if n < 1024:
-        return f"{n} B"
-    if n < 1024 * 1024:
-        return f"{n / 1024:.1f} KB"
-    return f"{n / (1024 * 1024):.1f} MB"
 
 
 # ─── Fetch modal ────────────────────────────────────────────────────────
@@ -313,7 +306,7 @@ class Mdp2pTUI(App[None]):
             label = Label(
                 f"[b]{site.author}[/]\n"
                 f"  md://{site.uri}\n"
-                f"  [dim]{site.file_count} file(s) · {_format_size(site.total_size)}[/]"
+                f"  [dim]{site.file_count} file(s) · {format_size(site.total_size)}[/]"
             )
             await list_view.append(ListItem(label, id=f"site-{site.uri}"))
 
@@ -435,15 +428,9 @@ class Mdp2pTUI(App[None]):
 
 def run() -> None:
     """Entry point wired into the mdp2p CLI subcommand."""
-    # Silence libp2p retry noise the same way the other CLIs do.
-    import logging
-    for noisy in (
-        "libp2p.transport.tcp",
-        "libp2p.kad_dht.peer_routing",
-        "libp2p.host.basic_host",
-    ):
-        logging.getLogger(noisy).setLevel(logging.CRITICAL)
+    from mdp2p_logging import silence_libp2p_noise
 
+    silence_libp2p_noise()
     config = load_or_create_config()
     Mdp2pTUI(config=config).run()
 

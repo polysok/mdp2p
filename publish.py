@@ -20,6 +20,7 @@ from libp2p.peer.peerinfo import info_from_p2p_addr
 sys.path.insert(0, str(Path(__file__).parent))
 
 from bundle import generate_keypair, make_key_name
+from mdp2p_logging import silence_libp2p_noise
 from peer import detect_local_ip, run_peer
 
 
@@ -107,15 +108,7 @@ if __name__ == "__main__":
         format="%(asctime)s [%(name)s] %(message)s",
         datefmt="%H:%M:%S",
     )
-    # Silence py-libp2p's internal retry noise on stale DHT peer records.
-    # These errors fire routinely for ghosts (peers that registered then
-    # went offline) and don't affect the local publish/fetch flow.
-    for noisy in (
-        "libp2p.transport.tcp",
-        "libp2p.kad_dht.peer_routing",
-        "libp2p.host.basic_host",
-    ):
-        logging.getLogger(noisy).setLevel(logging.CRITICAL)
+    silence_libp2p_noise()
 
     try:
         trio.run(

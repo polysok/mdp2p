@@ -19,13 +19,13 @@ dev = ["pytest>=7.0", "pytest-trio>=0.8"]
 tui = ["textual>=8.0.0", "rich>=13.7.0"]
 
 [project.scripts]
-mdp2p = "mdp2p_client.__main__:run"
+mdp2p = "mdp2p_client.app:run"
 
 [tool.setuptools]
-py-modules = ["bundle", "naming", "peer", "peer_zero", "pinstore", "wire"]
+py-modules = ["naming", "peer_zero", "pinstore", "wire", "mdp2p_logging"]
 
 [tool.setuptools.packages.find]
-include = ["mdp2p_client*"]
+include = ["mdp2p_client*", "bundle*", "peer*"]
 
 [tool.setuptools.package-data]
 mdp2p_client = ["locales/*.json"]

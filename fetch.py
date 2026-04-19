@@ -38,6 +38,7 @@ from libp2p.peer.peerinfo import info_from_p2p_addr
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from mdp2p_logging import silence_libp2p_noise
 from naming import client_list
 from peer import run_peer
 
@@ -151,13 +152,7 @@ def main() -> None:
         format="%(asctime)s [%(name)s] %(message)s",
         datefmt="%H:%M:%S",
     )
-    # See the note in publish.py — silence the DHT retry noise.
-    for noisy in (
-        "libp2p.transport.tcp",
-        "libp2p.kad_dht.peer_routing",
-        "libp2p.host.basic_host",
-    ):
-        logging.getLogger(noisy).setLevel(logging.CRITICAL)
+    silence_libp2p_noise()
 
     try:
         if args.list:

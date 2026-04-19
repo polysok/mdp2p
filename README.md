@@ -45,10 +45,31 @@ Client types md://blog.alice
 
 ## Installation
 
+### End users — one-liner (no Python required)
+
+macOS / Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/polysok/mdp2p/main/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/polysok/mdp2p/main/install.ps1 | iex
+```
+
+The script downloads a signed-free standalone binary from the latest
+GitHub release into `~/.local/bin` (macOS/Linux) or
+`%LOCALAPPDATA%\mdp2p\bin` (Windows). Override with `INSTALL_DIR=...`
+or pin a specific version with `MDP2P_VERSION=v0.2.0`.
+
+### Developers — from source
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[dev,tui]"
 ```
 
 On macOS ARM the transitive `fastecdsa` dependency must be built against
