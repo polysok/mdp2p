@@ -249,9 +249,9 @@ class Mdp2pTUI(App[None]):
                 yield Markdown(self._welcome_markdown(), id="render")
         yield Footer()
 
-    def on_mount(self) -> None:
+    async def on_mount(self) -> None:
         self.sub_title = self._subtitle_text()
-        self._load_sites()
+        await self._load_sites()
 
     # ── state helpers ──────────────────────────────────────────────
 
@@ -280,15 +280,18 @@ class Mdp2pTUI(App[None]):
             f"*Local cache:* `{self.config.data_dir}`\n"
         )
 
-    def _load_sites(self) -> None:
+    async def _load_sites(self) -> None:
         seeded = get_seeded_sites(str(self.config.data_dir))
         self._sites = [SiteView.from_seeded(s) for s in seeded]
-        self._apply_filter(self.query_one("#search", Input).value)
+        await self._apply_filter(self.query_one("#search", Input).value)
 
-    def _apply_filter(self, query: str) -> None:
+    async def _apply_filter(self, query: str) -> None:
         q = (query or "").lower().strip()
         list_view = self.query_one("#sites", ListView)
-        list_view.clear()
+        # ListView.clear() is async — schedules removal on the next cycle;
+        # awaiting it prevents trying to re-append with the same id before
+        # the previous nodes are torn down (DuplicateIds otherwise).
+        await list_view.clear()
 
         visible = [
             s for s in self._sites
@@ -301,7 +304,9 @@ class Mdp2pTUI(App[None]):
                 if not self._sites
                 else "no match for your filter"
             )
-            list_view.append(ListItem(Static(msg, classes="muted"), disabled=True))
+            await list_view.append(
+                ListItem(Static(msg, classes="muted"), disabled=True)
+            )
             return
 
         for site in visible:
@@ -310,7 +315,7 @@ class Mdp2pTUI(App[None]):
                 f"  md://{site.uri}\n"
                 f"  [dim]{site.file_count} file(s) · {_format_size(site.total_size)}[/]"
             )
-            list_view.append(ListItem(label, id=f"site-{site.uri}"))
+            await list_view.append(ListItem(label, id=f"site-{site.uri}"))
 
     def _render_uri(self, uri: str) -> None:
         site = next((s for s in self._sites if s.uri == uri), None)
@@ -327,9 +332,9 @@ class Mdp2pTUI(App[None]):
 
     # ── event handlers ─────────────────────────────────────────────
 
-    def on_input_changed(self, event: Input.Changed) -> None:
+    async def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "search":
-            self._apply_filter(event.value)
+            await self._apply_filter(event.value)
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         item = event.item
@@ -346,8 +351,8 @@ class Mdp2pTUI(App[None]):
 
     # ── actions ────────────────────────────────────────────────────
 
-    def action_refresh(self) -> None:
-        self._load_sites()
+    async def action_refresh(self) -> None:
+        await self._load_sites()
         self.notify("sites reloaded", timeout=2)
 
     def action_focus_search(self) -> None:
