@@ -181,6 +181,63 @@ class FetchModal(ModalScreen[tuple[str, str] | None]):
         self.dismiss(None)
 
 
+# ─── Publish modal ──────────────────────────────────────────────────────
+
+class PublishModal(ModalScreen[tuple[str, str] | None]):
+    """Collects (uri, site_path) for publishing a local folder of .md files."""
+
+    CSS = """
+    PublishModal { align: center middle; }
+    #dialog {
+        width: 76;
+        height: auto;
+        background: $panel;
+        border: tall $success;
+        padding: 1 2;
+    }
+    #dialog > Label { padding: 0 1; }
+    #dialog > Input { margin-bottom: 1; }
+    #buttons { layout: horizontal; height: auto; align-horizontal: right; }
+    #buttons > Button { margin-left: 1; }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Label("[b]Publish a new site[/]")
+            yield Label("URI (e.g. blog):")
+            yield Input(placeholder="blog", id="uri-input")
+            yield Label("Path to folder containing .md files:")
+            yield Input(
+                placeholder="~/Documents/my_site",
+                id="site-input",
+            )
+            with Horizontal(id="buttons"):
+                yield Button("Cancel", variant="default", id="cancel")
+                yield Button("Publish", variant="primary", id="ok")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "ok":
+            self._submit()
+        else:
+            self.dismiss(None)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self._submit()
+
+    def _submit(self) -> None:
+        uri = self.query_one("#uri-input", Input).value.strip()
+        path = self.query_one("#site-input", Input).value.strip()
+        if not uri or not path:
+            self.app.notify("URI and path are required", severity="warning")
+            return
+        self.dismiss((uri, path))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 # ─── Main app ───────────────────────────────────────────────────────────
 
 class Mdp2pTUI(App[None]):
@@ -217,9 +274,11 @@ class Mdp2pTUI(App[None]):
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("f", "fetch", "Fetch new URI"),
+        Binding("p", "publish", "Publish site"),
         Binding("r", "refresh", "Refresh"),
         Binding("slash", "focus_search", "Search"),
         Binding("ctrl+f", "fetch", show=False),
+        Binding("ctrl+p", "publish", show=False),
         Binding("escape", "focus_list", show=False),
     ]
 
@@ -267,6 +326,7 @@ class Mdp2pTUI(App[None]):
             "## What you can do\n\n"
             "- Pick a site in the sidebar, or\n"
             "- Press **`f`** to fetch a new URI by name\n"
+            "- Press **`p`** to publish a folder of `.md` files as a new site\n"
             "- Press **`/`** to search your locally cached sites\n"
             "- Press **`r`** to refresh the list, **`q`** to quit\n\n"
             "---\n\n"
@@ -413,6 +473,99 @@ class Mdp2pTUI(App[None]):
         if result.returncode == 0:
             self.call_from_thread(
                 self.notify, f"md://{uri} fetched ✓", severity="information"
+            )
+            self.call_from_thread(self._load_sites)
+        else:
+            tail = (result.stderr or result.stdout).strip().splitlines()
+            reason = tail[-1] if tail else f"exit code {result.returncode}"
+            self.call_from_thread(
+                self.notify,
+                f"md://{uri}: {reason}",
+                severity="warning",
+                timeout=10,
+            )
+
+    def action_publish(self) -> None:
+        if not self.config.naming_multiaddr:
+            self.notify(
+                "No naming server configured. Run `mdp2p setup` first.",
+                severity="error",
+            )
+            return
+
+        def _handle(result: tuple[str, str] | None) -> None:
+            if result is None:
+                return
+            uri, site_path = result
+            self.notify(f"Publishing md://{uri}…", timeout=3)
+            self._run_publish(uri, site_path)
+
+        self.push_screen(PublishModal(), callback=_handle)
+
+    @work(thread=True, exclusive=True, group="publish")
+    def _run_publish(self, uri: str, site_path: str) -> None:
+        """Delegate publishing to the `mdp2p publish` CLI in a subprocess.
+
+        Same rationale as `_run_fetch`: one process boundary, one test
+        surface. `sys.frozen` lets us invoke the subcommand via the
+        bundled binary when running from a PyInstaller release, and via
+        `python -m mdp2p_client` when running from source.
+        """
+        import subprocess
+        import sys as _sys
+
+        site = Path(site_path).expanduser()
+        if not site.exists():
+            self.call_from_thread(
+                self.notify, f"Path not found: {site_path}", severity="error",
+            )
+            return
+        if not site.is_dir():
+            self.call_from_thread(
+                self.notify, f"Not a directory: {site_path}", severity="error",
+            )
+            return
+        if not list(site.rglob("*.md")):
+            self.call_from_thread(
+                self.notify,
+                f"No .md files found under {site_path}",
+                severity="error",
+            )
+            return
+
+        if getattr(_sys, "frozen", False):
+            cmd = [_sys.executable, "publish", "--uri", uri, "--site", str(site)]
+        else:
+            cmd = [
+                _sys.executable, "-m", "mdp2p_client",
+                "publish", "--uri", uri, "--site", str(site),
+            ]
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                cwd=str(PROJECT_ROOT),
+                timeout=120,
+            )
+        except subprocess.TimeoutExpired:
+            self.call_from_thread(
+                self.notify,
+                f"md://{uri}: publish timed out after 120s",
+                severity="error",
+                timeout=10,
+            )
+            return
+        except Exception as e:
+            self.call_from_thread(
+                self.notify, f"publish failed: {e}", severity="error", timeout=10
+            )
+            return
+
+        if result.returncode == 0:
+            self.call_from_thread(
+                self.notify, f"md://{uri} published ✓", severity="information"
             )
             self.call_from_thread(self._load_sites)
         else:

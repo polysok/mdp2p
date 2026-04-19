@@ -21,7 +21,9 @@ jobs:
           - os: ubuntu-22.04
             artifact: mdp2p-linux-x86_64
             ext: ""
-          - os: macos-13
+          # macos-13 was retired by GitHub on 2025-12-04 under their N-1
+          # image policy. macos-15-intel is the replacement label for x86_64.
+          - os: macos-15-intel
             artifact: mdp2p-macos-x86_64
             ext: ""
           - os: macos-14
