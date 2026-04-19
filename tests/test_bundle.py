@@ -1,3 +1,4 @@
+import os
 import time
 from pathlib import Path
 
@@ -66,10 +67,13 @@ class TestKeypair:
         loaded = load_private_key(priv, passphrase="secret")
         assert loaded is not None
 
+    @pytest.mark.skipif(
+        os.name == "nt",
+        reason="Windows uses ACLs instead of POSIX mode bits; os.chmod is a no-op there.",
+    )
     def test_key_permissions(self, tmp_path):
         keys = tmp_path / "keys"
         priv, _ = generate_keypair(str(keys), "perm")
-        import stat
 
         mode = Path(priv).stat().st_mode & 0o777
         assert mode == 0o600
