@@ -52,6 +52,14 @@ from .bundle_protocol import (
     make_bundle_handler,
     try_download_from_seeders,
 )
+from .review_protocol import (
+    REVIEW_PROTOCOL,
+    CollectedReview,
+    ReviewerCallback,
+    auto_decline,
+    make_review_handler,
+    request_reviews,
+)
 
 logger = logging.getLogger("mdp2p.peer")
 
@@ -84,6 +92,43 @@ class Peer:
         handler = make_bundle_handler(lambda uri: self.sites.get(uri))
         self.host.set_stream_handler(BUNDLE_PROTOCOL, handler)
         self._rediscover_local_sites()
+
+    def attach_reviewer(
+        self,
+        reviewer_private_key,
+        reviewer_public_key_b64: str,
+        callback: ReviewerCallback = auto_decline,
+    ) -> None:
+        """Opt in to the reviewer role: register the REVIEW_PROTOCOL handler.
+
+        Publishers that discover this peer via the naming server's reviewer
+        registry will be able to send it review requests. The supplied
+        callback decides whether to issue a verdict (TUI prompt, policy,
+        or the default auto-decline).
+        """
+        handler = make_review_handler(
+            reviewer_private_key, reviewer_public_key_b64, callback
+        )
+        self.host.set_stream_handler(REVIEW_PROTOCOL, handler)
+
+    async def request_reviews(
+        self,
+        content_key: str,
+        manifest: dict,
+        manifest_signature: str,
+        reviewer_addrs: list[str],
+        timeout_seconds: float = 60.0,
+    ) -> list[CollectedReview]:
+        """Fan out review requests to the selected reviewers, collect results."""
+        return await request_reviews(
+            self.host,
+            self.relay_transport,
+            content_key,
+            manifest,
+            manifest_signature,
+            reviewer_addrs,
+            timeout_seconds,
+        )
 
     def _rediscover_local_sites(self) -> None:
         """Populate self.sites by scanning data_dir for previously-seeded bundles."""
