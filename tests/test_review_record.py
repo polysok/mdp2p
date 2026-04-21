@@ -44,7 +44,7 @@ def other_keypair(tmp_path):
 class TestReviewerOptInRoundtrip:
     def test_build_and_verify(self, keypair):
         priv, pub_b64 = keypair
-        record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS, categories=["tech", "fr"])
+        record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS, categories=["computing", "languages_linguistics"])
         signature = sign_reviewer_opt_in(record, priv)
         ok, err = verify_reviewer_opt_in(record, signature)
         assert ok, err
@@ -66,9 +66,9 @@ class TestReviewerOptInRoundtrip:
 
     def test_tampered_categories_fails_verification(self, keypair):
         priv, pub_b64 = keypair
-        record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS, categories=["tech"])
+        record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS, categories=["computing"])
         signature = sign_reviewer_opt_in(record, priv)
-        record["categories"] = ["tech", "politics"]
+        record["categories"] = ["computing", "politics"]
         ok, err = verify_reviewer_opt_in(record, signature)
         assert not ok
         assert err == "invalid signature"
@@ -85,7 +85,7 @@ class TestReviewerOptInRoundtrip:
     def test_non_list_categories_rejected(self, keypair):
         priv, pub_b64 = keypair
         record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS)
-        record["categories"] = "tech"
+        record["categories"] = "computing"
         signature = sign_reviewer_opt_in(record, priv)
         ok, err = verify_reviewer_opt_in(record, signature)
         assert not ok

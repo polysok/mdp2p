@@ -22,13 +22,13 @@ class TestReviewerFields:
             author="alice",
             reviewer_mode=True,
             reviewer_dir=str(tmp_path / "rev"),
-            reviewer_categories=["tech", "fr"],
+            reviewer_categories=["computing", "languages_linguistics"],
         )
         cfg.save(path)
         loaded = ClientConfig.load(path)
         assert loaded is not None
         assert loaded.reviewer_mode is True
-        assert loaded.reviewer_categories == ["tech", "fr"]
+        assert loaded.reviewer_categories == ["computing", "languages_linguistics"]
         assert loaded.reviewer_dir == str(tmp_path / "rev")
 
     def test_legacy_config_without_reviewer_fields_loads_with_defaults(self, tmp_path):

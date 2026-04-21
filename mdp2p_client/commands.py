@@ -154,6 +154,15 @@ def cli_setup(
     reviewer_categories: Optional[list[str]] = None,
 ) -> int:
     """CLI: Setup configuration."""
+    from review import validate_categories
+
+    if reviewer_categories is not None:
+        try:
+            validate_categories(reviewer_categories)
+        except ValueError as e:
+            print(f"\n  {c.RED}{e}{c.RESET}")
+            return 1
+
     if config is None:
         config = ClientConfig(author=author)
     else:
@@ -236,6 +245,15 @@ def cli_reviewer_enable(
     categories: Optional[list[str]] = None,
 ) -> int:
     """Enable reviewer mode + generate the reviewer identity if missing."""
+    from review import validate_categories
+
+    if categories is not None:
+        try:
+            validate_categories(categories)
+        except ValueError as e:
+            print(f"\n  {c.RED}{e}{c.RESET}")
+            return 1
+
     was_enabled = config.reviewer_mode
     config.reviewer_mode = True
     if categories is not None:

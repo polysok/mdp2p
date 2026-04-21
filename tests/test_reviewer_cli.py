@@ -52,9 +52,9 @@ class TestReviewerEnable:
         assert pub_b64 in out
 
     def test_records_categories(self, fresh_config):
-        rc = cli_reviewer_enable(fresh_config, categories=["tech", "fr"])
+        rc = cli_reviewer_enable(fresh_config, categories=["computing", "languages_linguistics"])
         assert rc == 0
-        assert fresh_config.reviewer_categories == ["tech", "fr"]
+        assert fresh_config.reviewer_categories == ["computing", "languages_linguistics"]
 
     def test_reuses_identity_on_second_enable(self, fresh_config, tmp_path):
         cli_reviewer_enable(fresh_config)
@@ -102,7 +102,7 @@ class TestReviewerStatus:
         assert "Enabled" in out
 
     def test_enabled_with_identity(self, fresh_config, capsys, tmp_path):
-        cli_reviewer_enable(fresh_config, categories=["tech"])
+        cli_reviewer_enable(fresh_config, categories=["computing"])
         capsys.readouterr()
         rc = cli_reviewer_status(fresh_config)
         assert rc == 0
@@ -111,7 +111,7 @@ class TestReviewerStatus:
             load_public_key(str(tmp_path / "reviewer" / "reviewer.pub"))
         )
         assert pub_b64 in out
-        assert "tech" in out
+        assert "computing" in out
 
 
 class TestSetupWithReviewer:
@@ -127,11 +127,11 @@ class TestSetupWithReviewer:
             cfg,
             author="alice",
             reviewer=True,
-            reviewer_categories=["science"],
+            reviewer_categories=["biology", "medicine"],
         )
         assert rc == 0
         assert cfg.reviewer_mode is True
-        assert cfg.reviewer_categories == ["science"]
+        assert cfg.reviewer_categories == ["biology", "medicine"]
         assert (reviewer_dir / "reviewer.key").exists()
 
     def test_setup_without_reviewer_flag_leaves_mode_off(self, tmp_path, redirect_config_file):

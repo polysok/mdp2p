@@ -32,6 +32,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from bundle._canonical import _canonical_json
 from bundle.crypto import b64_to_public_key, public_key_to_b64
 from bundle.manifest import compute_content_key
+from review.taxonomy import validate_categories as _validate_categories
 
 
 MAX_REVIEW_DRIFT_SECONDS = 300
@@ -56,14 +57,17 @@ def build_reviewer_opt_in(
     `peer_id` is the libp2p identity, stable across restarts. `addrs` is the
     reviewer's current dialable multiaddrs — this field is expected to be
     refreshed by the reviewer daemon on address changes and periodically
-    as a heartbeat. `categories` is an optional interest filter (empty
-    means accept any).
+    as a heartbeat. `categories` is an optional interest filter — each
+    entry must be a slug from ``review.taxonomy.CATEGORY_SLUGS``; an empty
+    list means "accept any category".
     """
+    normalized = list(categories) if categories else []
+    _validate_categories(normalized)
     return {
         "public_key": public_key_b64,
         "peer_id": peer_id,
         "addrs": list(addrs),
-        "categories": list(categories) if categories else [],
+        "categories": normalized,
         "timestamp": timestamp if timestamp is not None else int(time.time()),
     }
 

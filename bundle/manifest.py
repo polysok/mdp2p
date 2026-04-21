@@ -35,8 +35,21 @@ def create_manifest(
     author: str = "",
     version: int = 1,
     ttl: int = DEFAULT_TTL_SECONDS,
+    categories: List[str] = None,
 ) -> dict:
-    """Scan a directory of .md files and create the manifest."""
+    """Scan a directory of .md files and create the manifest.
+
+    ``categories`` must be a list of slugs from
+    ``review.taxonomy.CATEGORY_SLUGS``. When omitted or empty, the content
+    is labelled ``["other"]`` so reviewers who have opted in to "other"
+    still see it; publishers are strongly encouraged to pick specific
+    categories in the UI for better matching.
+    """
+    from review.taxonomy import validate_categories
+
+    cats = list(categories) if categories else ["other"]
+    validate_categories(cats)
+
     site_path = Path(site_dir)
     files: List[Dict[str, object]] = []
     for md_file in sorted(site_path.rglob("*.md")):
@@ -64,6 +77,7 @@ def create_manifest(
         "version": version,
         "timestamp": now,
         "expires_at": now + ttl,
+        "categories": cats,
         "files": files,
         "total_size": total_size,
         "file_count": len(files),

@@ -98,7 +98,7 @@ def _run(coro_factory):
 
 def test_register_and_list_reviewer(tmp_path):
     priv, pub_b64 = _make_reviewer()
-    record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS, categories=["tech"])
+    record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS, categories=["computing"])
     signature = sign_reviewer_opt_in(record, priv)
 
     async def main():
@@ -147,7 +147,7 @@ def test_multiple_reviewers_registered(tmp_path):
 
 def test_listed_entries_pass_local_verification(tmp_path):
     priv, pub_b64 = _make_reviewer()
-    record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS, categories=["fr"])
+    record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS, categories=["languages_linguistics"])
     signature = sign_reviewer_opt_in(record, priv)
 
     async def main():
@@ -167,7 +167,7 @@ def test_listed_entries_pass_local_verification(tmp_path):
 
 def test_tampered_signature_rejected(tmp_path):
     priv, pub_b64 = _make_reviewer()
-    record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS, categories=["tech"])
+    record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS, categories=["computing"])
     signature = sign_reviewer_opt_in(record, priv)
     record["categories"] = ["politics"]  # post-sign tamper
 
@@ -186,7 +186,7 @@ def test_stale_timestamp_rejected(tmp_path):
     first = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS, timestamp=now)
     sig_first = sign_reviewer_opt_in(first, priv)
     stale = build_reviewer_opt_in(
-        pub_b64, PEER_ID, ADDRS, categories=["new"], timestamp=now
+        pub_b64, PEER_ID, ADDRS, categories=["other"], timestamp=now
     )
     sig_stale = sign_reviewer_opt_in(stale, priv)
 
@@ -206,14 +206,14 @@ def test_newer_update_accepted(tmp_path):
     priv, pub_b64 = _make_reviewer()
     now = int(time.time())
     v1 = build_reviewer_opt_in(
-        pub_b64, PEER_ID, ADDRS, categories=["tech"], timestamp=now
+        pub_b64, PEER_ID, ADDRS, categories=["computing"], timestamp=now
     )
     sig_v1 = sign_reviewer_opt_in(v1, priv)
     v2 = build_reviewer_opt_in(
         pub_b64,
         PEER_ID,
         ["/ip4/127.0.0.1/tcp/4002"],  # reviewer moved addresses
-        categories=["tech", "fr"],
+        categories=["computing", "languages_linguistics"],
         timestamp=now + 1,
     )
     sig_v2 = sign_reviewer_opt_in(v2, priv)
@@ -229,7 +229,7 @@ def test_newer_update_accepted(tmp_path):
             listing = await client_list_reviewers(client, server_info)
             records = listing["records"]
             assert len(records) == 1
-            assert records[0]["record"]["categories"] == ["tech", "fr"]
+            assert records[0]["record"]["categories"] == ["computing", "languages_linguistics"]
 
     _run(main)
 
@@ -274,7 +274,7 @@ def test_list_reviewers_returns_empty_without_registry(tmp_path):
 
 def test_reviewer_registry_survives_restart(tmp_path):
     priv, pub_b64 = _make_reviewer()
-    record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS, categories=["tech"])
+    record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS, categories=["computing"])
     signature = sign_reviewer_opt_in(record, priv)
 
     async def write():
