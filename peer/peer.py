@@ -40,10 +40,18 @@ from bundle import (
     verify_name_record,
 )
 from naming import (
+    client_list_reviewers as naming_list_reviewers,
+    client_post_assignment as naming_post_assignment,
     client_register as naming_register,
     client_resolve as naming_resolve,
 )
 from pinstore import PinStatus, check_pin, pin_key, update_pin_last_seen
+from review import (
+    build_review_assignment,
+    select_reviewers,
+    sign_review_assignment,
+    verify_reviewer_opt_in,
+)
 from wire import recv_framed_json, send_framed_json
 
 from .bundle_protocol import (
@@ -57,6 +65,9 @@ logger = logging.getLogger("mdp2p.peer")
 
 DEFAULT_DATA_DIR = "./peer_data"
 DEFAULT_PINSTORE = str(Path.home() / ".mdp2p" / "known_keys.json")
+
+DEFAULT_REVIEW_COUNT = 3
+DEFAULT_REVIEW_DEADLINE_DAYS = 3
 
 
 class Peer:
@@ -118,8 +129,18 @@ class Peer:
         author: str,
         site_dir: str,
         private_key_path: str,
+        review_count: int = DEFAULT_REVIEW_COUNT,
+        review_deadline_days: int = DEFAULT_REVIEW_DEADLINE_DAYS,
+        reviewer_freshness_seconds: Optional[int] = None,
     ) -> tuple[dict, str]:
         """Create a signed bundle, register on naming, seed locally.
+
+        After registration, the publisher also attempts to solicit reviews
+        by selecting `review_count` reviewers from the naming server's
+        registry and posting a signed assignment to their inbox. Reviewers
+        then have up to `review_deadline_days` to attach a verdict. A
+        missing or empty reviewer pool does not block publication — the
+        content is still registered and announced.
 
         Returns (manifest, signature_b64).
         """
@@ -160,9 +181,81 @@ class Peer:
             raise RuntimeError(f"naming register failed: {resp.get('msg')}")
         logger.info("naming registered: %s → %s", uri, manifest_ref[:12])
 
+        content_key = compute_content_key(uri, pub_b64)
+        await self._solicit_reviews(
+            content_key=content_key,
+            publisher_pub_b64=pub_b64,
+            publisher_private_key=private_key,
+            review_count=review_count,
+            review_deadline_days=review_deadline_days,
+            freshness_seconds=reviewer_freshness_seconds,
+        )
+
         self.sites[uri] = site_dir_resolved
         await self.announce(uri)
         return manifest, signature
+
+    # ─── Review solicitation ─────────────────────────────────────────
+
+    async def _solicit_reviews(
+        self,
+        content_key: str,
+        publisher_pub_b64: str,
+        publisher_private_key,
+        review_count: int,
+        review_deadline_days: int,
+        freshness_seconds: Optional[int],
+    ) -> None:
+        """Fetch reviewer pool, select, and post a signed assignment.
+
+        Graceful failure: an empty pool, an unreachable naming server, or
+        a rejected assignment logs a warning but never raises — publication
+        must not be held hostage by the review subsystem.
+        """
+        try:
+            listing = await naming_list_reviewers(self.host, self.naming_info)
+        except Exception as e:
+            logger.warning("list_reviewers failed, skipping assignment: %s", e)
+            return
+
+        entries = listing.get("records") or []
+        pool = _extract_fresh_reviewer_pool(entries, freshness_seconds)
+        if not pool:
+            logger.info("no fresh reviewers available, skipping assignment")
+            return
+
+        selected = select_reviewers(content_key, pool, review_count)
+        if not selected:
+            logger.info("selection yielded no reviewer, skipping assignment")
+            return
+
+        import time as _time
+        deadline = int(_time.time()) + review_deadline_days * 86400
+        assignment = build_review_assignment(
+            content_key=content_key,
+            publisher_pubkey_b64=publisher_pub_b64,
+            reviewer_pubkeys_b64=selected,
+            deadline=deadline,
+        )
+        signature = sign_review_assignment(assignment, publisher_private_key)
+
+        try:
+            resp = await naming_post_assignment(
+                self.host, self.naming_info, assignment, signature
+            )
+        except Exception as e:
+            logger.warning("post_assignment failed: %s", e)
+            return
+
+        if resp.get("type") != "ok":
+            logger.warning("post_assignment rejected: %s", resp.get("msg"))
+        else:
+            logger.info(
+                "review assignment posted: %s → %d reviewers, deadline in %dd",
+                content_key[:24],
+                len(selected),
+                review_deadline_days,
+            )
 
     # ─── DHT announce ────────────────────────────────────────────────
 
@@ -382,6 +475,8 @@ class Peer:
 
     # ─── Rendering ──────────────────────────────────────────────────
 
+    # ─── Review-side helpers kept local to peer ──────────────────────
+
     def render_site(self, uri: str) -> str:
         if uri not in self.sites:
             return f"Site '{uri}' not found locally."
@@ -403,3 +498,38 @@ class Peer:
             output.append(content.strip())
             output.append(f"└{'─' * 50}┘\n")
         return "\n".join(output)
+
+
+def _extract_fresh_reviewer_pool(
+    entries: list[dict],
+    freshness_seconds: Optional[int],
+) -> list[str]:
+    """Extract verified reviewer public keys from a list_reviewers listing.
+
+    Drops entries with invalid signatures; optionally drops those whose
+    last-known timestamp is older than `freshness_seconds`. Returning an
+    empty list is valid (caller handles it gracefully).
+    """
+    import time as _time
+
+    now = int(_time.time())
+    pool: list[str] = []
+    for entry in entries:
+        record = entry.get("record") if isinstance(entry, dict) else None
+        signature = entry.get("signature", "") if isinstance(entry, dict) else ""
+        if not isinstance(record, dict) or not signature:
+            continue
+        # max_drift=None: we accept records stored long ago on the server,
+        # since the naming server enforces freshness at register time. We
+        # verify the signature only — the subsequent freshness filter uses
+        # the record's own timestamp.
+        ok, _ = verify_reviewer_opt_in(record, signature, max_drift=None)
+        if not ok:
+            continue
+        if freshness_seconds is not None:
+            if now - int(record.get("timestamp", 0)) > freshness_seconds:
+                continue
+        pubkey = record.get("public_key", "")
+        if pubkey:
+            pool.append(pubkey)
+    return pool
