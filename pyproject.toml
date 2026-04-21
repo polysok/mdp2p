@@ -25,7 +25,7 @@ mdp2p = "mdp2p_client.app:run"
 py-modules = ["naming", "peer_zero", "pinstore", "wire", "mdp2p_logging"]
 
 [tool.setuptools.packages.find]
-include = ["mdp2p_client*", "bundle*", "peer*"]
+include = ["mdp2p_client*", "bundle*", "peer*", "trust*"]
 
 [tool.setuptools.package-data]
 mdp2p_client = ["locales/*.json"]
