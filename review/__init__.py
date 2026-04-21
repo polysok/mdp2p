@@ -12,10 +12,13 @@ Wire protocol and naming-server integration live in peer/ and naming.py.
 
 from review.record import (
     MAX_REVIEW_DRIFT_SECONDS,
+    build_review_assignment,
     build_review_record,
     build_reviewer_opt_in,
+    sign_review_assignment,
     sign_review_record,
     sign_reviewer_opt_in,
+    verify_review_assignment,
     verify_review_record,
     verify_reviewer_opt_in,
 )
@@ -23,11 +26,14 @@ from review.selection import select_reviewers
 
 __all__ = [
     "MAX_REVIEW_DRIFT_SECONDS",
+    "build_review_assignment",
     "build_review_record",
     "build_reviewer_opt_in",
     "select_reviewers",
+    "sign_review_assignment",
     "sign_review_record",
     "sign_reviewer_opt_in",
+    "verify_review_assignment",
     "verify_review_record",
     "verify_reviewer_opt_in",
 ]

@@ -14,6 +14,10 @@ Wire protocol: /mdp2p/naming/1.0.0
   list              : {"type": "list"}
   register_reviewer : {"type": "register_reviewer", "record": {...}, "signature": "<b64>"}
   list_reviewers    : {"type": "list_reviewers"}
+  post_assignment   : {"type": "post_assignment", "record": {...}, "signature": "<b64>"}
+  list_assignments  : {"type": "list_assignments", "reviewer_public_key": "<b64>"}
+  attach_review     : {"type": "attach_review", "record": {...}, "signature": "<b64>"}
+  get_attachments   : {"type": "get_attachments", "content_key": "<str>"}
 
 Every message on a stream is length-prefixed: [4 bytes big-endian length][JSON].
 """
@@ -39,7 +43,11 @@ from libp2p.network.stream.net_stream import INetStream
 from libp2p.peer.peerinfo import PeerInfo
 
 from bundle import validate_uri, verify_name_record
-from review import verify_reviewer_opt_in
+from review import (
+    verify_review_assignment,
+    verify_review_record,
+    verify_reviewer_opt_in,
+)
 from wire import recv_framed_json, send_framed_json
 
 logger = logging.getLogger("mdp2p.naming")
@@ -49,6 +57,8 @@ MAX_MSG_SIZE = 1 * 1024 * 1024  # 1 MiB is ample for any name record
 DEFAULT_PORT = 1707
 DEFAULT_STORE_PATH = "./naming_data/records.json"
 DEFAULT_REVIEWERS_PATH = "./naming_data/reviewers.json"
+DEFAULT_ASSIGNMENTS_PATH = "./naming_data/assignments.json"
+DEFAULT_ATTACHMENTS_PATH = "./naming_data/attachments.json"
 DEFAULT_KEY_PATH = "./naming_data/peer.key"
 
 
@@ -184,6 +194,144 @@ class ReviewerStore:
         return True, ""
 
 
+# ─── Assignment inbox ─────────────────────────────────────────────────
+
+class AssignmentStore:
+    """Per-reviewer inbox of review assignments.
+
+    Each entry is keyed by (reviewer_public_key, content_key) so a second
+    assignment by the same publisher for the same content replaces the
+    earlier one. Reviewers poll their inbox on their own schedule; the
+    store itself does not enforce deadlines — readers and reviewers filter
+    on the record's `deadline` field.
+    """
+
+    def __init__(self, path: str):
+        self.path = Path(path)
+        # inbox[reviewer_pubkey][content_key] = (record, signature)
+        self._inbox: dict[str, dict[str, tuple[dict, str]]] = {}
+        self._load()
+
+    def _load(self) -> None:
+        if not self.path.exists():
+            return
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+            for reviewer_pub, by_content in raw.items():
+                self._inbox[reviewer_pub] = {
+                    content_key: (entry["record"], entry["signature"])
+                    for content_key, entry in by_content.items()
+                }
+            logger.info(
+                "Loaded %d reviewer inboxes from %s",
+                len(self._inbox),
+                self.path,
+            )
+        except Exception as e:
+            logger.error("Failed to load assignments: %s", e)
+
+    def _save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        serialized = {
+            reviewer_pub: {
+                content_key: {"record": record, "signature": signature}
+                for content_key, (record, signature) in by_content.items()
+            }
+            for reviewer_pub, by_content in self._inbox.items()
+        }
+        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        tmp.write_text(
+            json.dumps(serialized, indent=2, sort_keys=True), encoding="utf-8"
+        )
+        tmp.replace(self.path)
+
+    def add(self, record: dict, signature: str) -> tuple[bool, str]:
+        """Store an assignment in each selected reviewer's inbox."""
+        content_key = record.get("content_key", "")
+        reviewer_pubkeys = record.get("reviewer_public_keys") or []
+        if not content_key or not reviewer_pubkeys:
+            return False, "assignment missing content_key or reviewer_public_keys"
+
+        new_ts = int(record.get("timestamp", 0))
+        for reviewer_pub in reviewer_pubkeys:
+            slot = self._inbox.setdefault(reviewer_pub, {})
+            existing = slot.get(content_key)
+            if existing is not None and int(existing[0].get("timestamp", 0)) >= new_ts:
+                continue  # keep the newer (or equally-fresh) one
+            slot[content_key] = (record, signature)
+        self._save()
+        return True, ""
+
+    def list_for(self, reviewer_pubkey: str) -> list[tuple[dict, str]]:
+        return list(self._inbox.get(reviewer_pubkey, {}).values())
+
+
+# ─── Attachment store ────────────────────────────────────────────────
+
+class AttachmentStore:
+    """Review records attached to a content_key after publication.
+
+    Dedup rule: one record per (content_key, reviewer_public_key). A newer
+    record replaces the older one (reviewers can amend their verdict).
+    """
+
+    def __init__(self, path: str):
+        self.path = Path(path)
+        # attachments[content_key][reviewer_pubkey] = (record, signature)
+        self._attachments: dict[str, dict[str, tuple[dict, str]]] = {}
+        self._load()
+
+    def _load(self) -> None:
+        if not self.path.exists():
+            return
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+            for content_key, by_reviewer in raw.items():
+                self._attachments[content_key] = {
+                    reviewer_pub: (entry["record"], entry["signature"])
+                    for reviewer_pub, entry in by_reviewer.items()
+                }
+            logger.info(
+                "Loaded attachments for %d content keys from %s",
+                len(self._attachments),
+                self.path,
+            )
+        except Exception as e:
+            logger.error("Failed to load attachments: %s", e)
+
+    def _save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        serialized = {
+            content_key: {
+                reviewer_pub: {"record": record, "signature": signature}
+                for reviewer_pub, (record, signature) in by_reviewer.items()
+            }
+            for content_key, by_reviewer in self._attachments.items()
+        }
+        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        tmp.write_text(
+            json.dumps(serialized, indent=2, sort_keys=True), encoding="utf-8"
+        )
+        tmp.replace(self.path)
+
+    def attach(self, record: dict, signature: str) -> tuple[bool, str]:
+        content_key = record.get("content_key", "")
+        reviewer_pub = record.get("reviewer_public_key", "")
+        if not content_key or not reviewer_pub:
+            return False, "review record missing content_key or reviewer_public_key"
+        slot = self._attachments.setdefault(content_key, {})
+        existing = slot.get(reviewer_pub)
+        new_ts = int(record.get("timestamp", 0))
+        if existing is not None and int(existing[0].get("timestamp", 0)) >= new_ts:
+            return False, "existing attachment is at least as recent"
+        slot[reviewer_pub] = (record, signature)
+        self._save()
+        return True, ""
+
+    def get_for(self, content_key: str) -> list[tuple[dict, str]]:
+        return list(self._attachments.get(content_key, {}).values())
+
+
 # ─── Server ───────────────────────────────────────────────────────────
 
 class NamingServer:
@@ -192,10 +340,14 @@ class NamingServer:
         host: IHost,
         store: NameStore,
         reviewer_store: Optional[ReviewerStore] = None,
+        assignment_store: Optional[AssignmentStore] = None,
+        attachment_store: Optional[AttachmentStore] = None,
     ):
         self.host = host
         self.store = store
         self.reviewer_store = reviewer_store
+        self.assignment_store = assignment_store
+        self.attachment_store = attachment_store
 
     def attach(self) -> None:
         self.host.set_stream_handler(NAMING_PROTOCOL, self._handle_stream)
@@ -218,6 +370,14 @@ class NamingServer:
                 response = self._handle_register_reviewer(msg)
             elif msg_type == "list_reviewers":
                 response = self._handle_list_reviewers()
+            elif msg_type == "post_assignment":
+                response = self._handle_post_assignment(msg)
+            elif msg_type == "list_assignments":
+                response = self._handle_list_assignments(msg)
+            elif msg_type == "attach_review":
+                response = self._handle_attach_review(msg)
+            elif msg_type == "get_attachments":
+                response = self._handle_get_attachments(msg)
             else:
                 response = {"type": "error", "msg": f"unknown type: {msg_type}"}
 
@@ -309,6 +469,80 @@ class NamingServer:
         ]
         return {"type": "reviewers", "records": entries}
 
+    def _handle_post_assignment(self, msg: dict) -> dict:
+        if self.assignment_store is None:
+            return {"type": "error", "msg": "assignment inbox disabled on this server"}
+
+        record = msg.get("record") or {}
+        signature = msg.get("signature", "")
+        if not record or not signature:
+            return {"type": "error", "msg": "record and signature required"}
+
+        is_valid, err = verify_review_assignment(record, signature)
+        if not is_valid:
+            return {"type": "error", "msg": f"invalid signature: {err}"}
+
+        ok, err = self.assignment_store.add(record, signature)
+        if not ok:
+            return {"type": "error", "msg": err}
+
+        logger.info(
+            "POST_ASSIGNMENT content=%s reviewers=%d deadline=%s",
+            record.get("content_key", "")[:24],
+            len(record.get("reviewer_public_keys") or []),
+            record.get("deadline"),
+        )
+        return {"type": "ok", "content_key": record.get("content_key")}
+
+    def _handle_list_assignments(self, msg: dict) -> dict:
+        if self.assignment_store is None:
+            return {"type": "assignments", "records": []}
+        reviewer_pub = msg.get("reviewer_public_key", "")
+        if not reviewer_pub:
+            return {"type": "error", "msg": "reviewer_public_key required"}
+        entries = [
+            {"record": record, "signature": signature}
+            for record, signature in self.assignment_store.list_for(reviewer_pub)
+        ]
+        return {"type": "assignments", "records": entries}
+
+    def _handle_attach_review(self, msg: dict) -> dict:
+        if self.attachment_store is None:
+            return {"type": "error", "msg": "attachment store disabled on this server"}
+
+        record = msg.get("record") or {}
+        signature = msg.get("signature", "")
+        if not record or not signature:
+            return {"type": "error", "msg": "record and signature required"}
+
+        is_valid, err = verify_review_record(record, signature)
+        if not is_valid:
+            return {"type": "error", "msg": f"invalid signature: {err}"}
+
+        ok, err = self.attachment_store.attach(record, signature)
+        if not ok:
+            return {"type": "error", "msg": err}
+
+        logger.info(
+            "ATTACH_REVIEW content=%s reviewer=%s verdict=%s",
+            record.get("content_key", "")[:24],
+            record.get("reviewer_public_key", "")[:12],
+            record.get("verdict"),
+        )
+        return {"type": "ok", "content_key": record.get("content_key")}
+
+    def _handle_get_attachments(self, msg: dict) -> dict:
+        if self.attachment_store is None:
+            return {"type": "attachments", "records": []}
+        content_key = msg.get("content_key", "")
+        if not content_key:
+            return {"type": "error", "msg": "content_key required"}
+        entries = [
+            {"record": record, "signature": signature}
+            for record, signature in self.attachment_store.get_for(content_key)
+        ]
+        return {"type": "attachments", "records": entries}
+
 
 async def _send_error(stream: INetStream, message: str) -> None:
     try:
@@ -364,6 +598,46 @@ async def client_list_reviewers(host: IHost, server_info: PeerInfo) -> dict:
     return await _rpc(host, server_info, {"type": "list_reviewers"})
 
 
+async def client_post_assignment(
+    host: IHost, server_info: PeerInfo, record: dict, signature: str
+) -> dict:
+    return await _rpc(
+        host,
+        server_info,
+        {"type": "post_assignment", "record": record, "signature": signature},
+    )
+
+
+async def client_list_assignments(
+    host: IHost, server_info: PeerInfo, reviewer_public_key: str
+) -> dict:
+    return await _rpc(
+        host,
+        server_info,
+        {"type": "list_assignments", "reviewer_public_key": reviewer_public_key},
+    )
+
+
+async def client_attach_review(
+    host: IHost, server_info: PeerInfo, record: dict, signature: str
+) -> dict:
+    return await _rpc(
+        host,
+        server_info,
+        {"type": "attach_review", "record": record, "signature": signature},
+    )
+
+
+async def client_get_attachments(
+    host: IHost, server_info: PeerInfo, content_key: str
+) -> dict:
+    return await _rpc(
+        host,
+        server_info,
+        {"type": "get_attachments", "content_key": content_key},
+    )
+
+
 # ─── Peer key persistence ─────────────────────────────────────────────
 
 def load_or_create_peer_seed(path: str) -> bytes:
@@ -386,7 +660,12 @@ def load_or_create_peer_seed(path: str) -> bytes:
 # ─── CLI ──────────────────────────────────────────────────────────────
 
 async def serve(
-    port: int, store_path: str, reviewers_path: str, key_path: str
+    port: int,
+    store_path: str,
+    reviewers_path: str,
+    assignments_path: str,
+    attachments_path: str,
+    key_path: str,
 ) -> None:
     seed = load_or_create_peer_seed(key_path)
     host = new_host(key_pair=create_new_key_pair(seed))
@@ -394,7 +673,11 @@ async def serve(
     listen = multiaddr.Multiaddr(f"/ip4/0.0.0.0/tcp/{port}")
     store = NameStore(store_path)
     reviewer_store = ReviewerStore(reviewers_path)
-    server = NamingServer(host, store, reviewer_store)
+    assignment_store = AssignmentStore(assignments_path)
+    attachment_store = AttachmentStore(attachments_path)
+    server = NamingServer(
+        host, store, reviewer_store, assignment_store, attachment_store
+    )
 
     async with host.run(listen_addrs=[listen]), trio.open_nursery() as nursery:
         nursery.start_soon(host.get_peerstore().start_cleanup_task, 60)
@@ -423,6 +706,8 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--store", default=DEFAULT_STORE_PATH)
     parser.add_argument("--reviewers", default=DEFAULT_REVIEWERS_PATH)
+    parser.add_argument("--assignments", default=DEFAULT_ASSIGNMENTS_PATH)
+    parser.add_argument("--attachments", default=DEFAULT_ATTACHMENTS_PATH)
     parser.add_argument("--key", default=DEFAULT_KEY_PATH)
     args = parser.parse_args()
 
@@ -433,7 +718,15 @@ def main() -> None:
     )
 
     try:
-        trio.run(serve, args.port, args.store, args.reviewers, args.key)
+        trio.run(
+            serve,
+            args.port,
+            args.store,
+            args.reviewers,
+            args.assignments,
+            args.attachments,
+            args.key,
+        )
     except KeyboardInterrupt:
         print("\n[NAMING] stopped")
         sys.exit(0)

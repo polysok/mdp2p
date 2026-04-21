@@ -9,10 +9,13 @@ from bundle.crypto import (
     public_key_to_b64,
 )
 from review.record import (
+    build_review_assignment,
     build_review_record,
     build_reviewer_opt_in,
+    sign_review_assignment,
     sign_review_record,
     sign_reviewer_opt_in,
+    verify_review_assignment,
     verify_review_record,
     verify_reviewer_opt_in,
 )
@@ -235,3 +238,88 @@ class TestReviewRecordRoundtrip:
         ok, err = verify_review_record(record, signature)
         assert not ok
         assert "invalid verdict" in err
+
+
+class TestReviewAssignmentRoundtrip:
+    DEADLINE = int(time.time()) + 3 * 86400  # 3 days out
+
+    def test_build_and_verify(self, keypair):
+        priv, pub_b64 = keypair
+        record = build_review_assignment(
+            content_key="/mdp2p/abc",
+            publisher_pubkey_b64=pub_b64,
+            reviewer_pubkeys_b64=["r1", "r2", "r3"],
+            deadline=self.DEADLINE,
+        )
+        signature = sign_review_assignment(record, priv)
+        ok, err = verify_review_assignment(record, signature)
+        assert ok, err
+
+    def test_tampered_reviewer_list_fails(self, keypair):
+        priv, pub_b64 = keypair
+        record = build_review_assignment(
+            "/mdp2p/abc", pub_b64, ["r1", "r2"], self.DEADLINE
+        )
+        signature = sign_review_assignment(record, priv)
+        record["reviewer_public_keys"] = ["r1", "r2", "attacker"]
+        ok, err = verify_review_assignment(record, signature)
+        assert not ok
+        assert err == "invalid signature"
+
+    def test_tampered_deadline_fails(self, keypair):
+        priv, pub_b64 = keypair
+        record = build_review_assignment(
+            "/mdp2p/abc", pub_b64, ["r1"], self.DEADLINE
+        )
+        signature = sign_review_assignment(record, priv)
+        record["deadline"] = self.DEADLINE + 365 * 86400
+        ok, err = verify_review_assignment(record, signature)
+        assert not ok
+        assert err == "invalid signature"
+
+    def test_sign_with_wrong_key_raises(self, keypair, other_keypair):
+        _, pub_b64 = keypair
+        other_priv, _ = other_keypair
+        record = build_review_assignment(
+            "/mdp2p/abc", pub_b64, ["r1"], self.DEADLINE
+        )
+        with pytest.raises(ValueError, match="does not match"):
+            sign_review_assignment(record, other_priv)
+
+    def test_zero_deadline_rejected_at_build(self, keypair):
+        _, pub_b64 = keypair
+        with pytest.raises(ValueError, match="deadline"):
+            build_review_assignment("/mdp2p/abc", pub_b64, ["r1"], deadline=0)
+
+    def test_missing_field_rejected(self, keypair):
+        priv, pub_b64 = keypair
+        record = build_review_assignment(
+            "/mdp2p/abc", pub_b64, ["r1"], self.DEADLINE
+        )
+        signature = sign_review_assignment(record, priv)
+        del record["deadline"]
+        ok, err = verify_review_assignment(record, signature)
+        assert not ok
+        assert "missing fields" in err
+
+    def test_non_list_reviewers_rejected(self, keypair):
+        priv, pub_b64 = keypair
+        record = build_review_assignment(
+            "/mdp2p/abc", pub_b64, ["r1"], self.DEADLINE
+        )
+        record["reviewer_public_keys"] = "r1"
+        signature = sign_review_assignment(record, priv)
+        ok, err = verify_review_assignment(record, signature)
+        assert not ok
+        assert "reviewer_public_keys must be a list" in err
+
+    def test_expired_timestamp_rejected(self, keypair):
+        priv, pub_b64 = keypair
+        old = int(time.time()) - 10_000
+        record = build_review_assignment(
+            "/mdp2p/abc", pub_b64, ["r1"], self.DEADLINE, timestamp=old
+        )
+        signature = sign_review_assignment(record, priv)
+        ok, err = verify_review_assignment(record, signature)
+        assert not ok
+        assert "drift" in err
