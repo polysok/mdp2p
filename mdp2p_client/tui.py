@@ -42,8 +42,10 @@ from textual.widgets import (
     ListItem,
     ListView,
     Markdown,
+    SelectionList,
     Static,
 )
+from textual.widgets.selection_list import Selection
 
 from bundle import load_bundle, load_public_key, public_key_to_b64
 from mdp2p_client import service as svc
@@ -58,6 +60,7 @@ from mdp2p_client.config import (
 from mdp2p_client.formatting import format_size
 from mdp2p_client.scoring import score_from_cache
 from peer.reviewer_daemon import ensure_reviewer_identity
+from review import labeled_categories
 from trust import ScoreResult
 
 
@@ -254,13 +257,13 @@ class FetchModal(ModalScreen[tuple[str, str] | None]):
 
 # ─── Publish modal ──────────────────────────────────────────────────────
 
-class PublishModal(ModalScreen[tuple[str, str] | None]):
-    """Collects (uri, site_path) for publishing a local folder of .md files."""
+class PublishModal(ModalScreen[tuple[str, str, list[str]] | None]):
+    """Collects (uri, site_path, categories) for publishing a folder of .md files."""
 
     CSS = """
     PublishModal { align: center middle; }
     #dialog {
-        width: 76;
+        width: 80;
         height: auto;
         background: $panel;
         border: tall $success;
@@ -268,11 +271,19 @@ class PublishModal(ModalScreen[tuple[str, str] | None]):
     }
     #dialog > Label { padding: 0 1; }
     #dialog > Input { margin-bottom: 1; }
+    #categories-list {
+        height: 14;
+        margin: 1 0;
+    }
     #buttons { layout: horizontal; height: auto; align-horizontal: right; }
     #buttons > Button { margin-left: 1; }
     """
 
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, language: str = "fr") -> None:
+        super().__init__()
+        self._language = language
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
@@ -283,6 +294,14 @@ class PublishModal(ModalScreen[tuple[str, str] | None]):
             yield Input(
                 placeholder="~/Documents/my_site",
                 id="site-input",
+            )
+            yield Label("Categories (space or click to toggle, any number):")
+            yield SelectionList[str](
+                *[
+                    Selection(lbl, slug)
+                    for slug, lbl in labeled_categories(self._language)
+                ],
+                id="categories-list",
             )
             with Horizontal(id="buttons"):
                 yield Button("Cancel", variant="default", id="cancel")
@@ -303,7 +322,8 @@ class PublishModal(ModalScreen[tuple[str, str] | None]):
         if not uri or not path:
             self.app.notify("URI and path are required", severity="warning")
             return
-        self.dismiss((uri, path))
+        cats = list(self.query_one("#categories-list", SelectionList).selected)
+        self.dismiss((uri, path, cats))
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -322,14 +342,17 @@ class ReviewerSettingsModal(ModalScreen[Optional[tuple[str, list[str]]]]):
     CSS = """
     ReviewerSettingsModal { align: center middle; }
     #dialog {
-        width: 76;
+        width: 80;
         height: auto;
         background: $panel;
         border: tall $accent;
         padding: 1 2;
     }
     #dialog > Label { padding: 0 1; }
-    #dialog > Input { margin-bottom: 1; }
+    #categories-list {
+        height: 14;
+        margin: 1 0;
+    }
     #buttons { layout: horizontal; height: auto; align-horizontal: right; }
     #buttons > Button { margin-left: 1; }
     """
@@ -341,11 +364,13 @@ class ReviewerSettingsModal(ModalScreen[Optional[tuple[str, list[str]]]]):
         is_enabled: bool,
         pubkey: str,
         categories: list[str],
+        language: str = "fr",
     ) -> None:
         super().__init__()
         self._is_enabled = is_enabled
         self._pubkey = pubkey
-        self._categories = categories
+        self._categories = set(categories)
+        self._language = language
 
     def compose(self) -> ComposeResult:
         state = "[b green]enabled[/]" if self._is_enabled else "[b]disabled[/]"
@@ -359,12 +384,15 @@ class ReviewerSettingsModal(ModalScreen[Optional[tuple[str, list[str]]]]):
             yield Label(f"Current state: {state}")
             yield Label(pubkey_line)
             yield Label(
-                "\nCategories you accept (comma-separated, leave empty for any):"
+                "\nCategories you accept to review "
+                "(space or click to toggle; empty = any):"
             )
-            yield Input(
-                value=", ".join(self._categories),
-                placeholder="tech, fr, science",
-                id="categories-input",
+            yield SelectionList[str](
+                *[
+                    Selection(lbl, slug, initial_state=(slug in self._categories))
+                    for slug, lbl in labeled_categories(self._language)
+                ],
+                id="categories-list",
             )
             with Horizontal(id="buttons"):
                 yield Button("Cancel", variant="default", id="cancel")
@@ -381,8 +409,7 @@ class ReviewerSettingsModal(ModalScreen[Optional[tuple[str, list[str]]]]):
         if event.button.id == "disable":
             self.dismiss(("disable", []))
             return
-        raw = self.query_one("#categories-input", Input).value.strip()
-        cats = [s.strip() for s in raw.split(",") if s.strip()] if raw else []
+        cats = list(self.query_one("#categories-list", SelectionList).selected)
         self.dismiss(("enable", cats))
 
     def action_cancel(self) -> None:
@@ -791,6 +818,7 @@ class Mdp2pTUI(App[None]):
                 is_enabled=self.config.reviewer_mode,
                 pubkey=pubkey,
                 categories=list(self.config.reviewer_categories),
+                language=self.config.language,
             ),
             callback=_handle,
         )
@@ -947,17 +975,17 @@ class Mdp2pTUI(App[None]):
             )
             return
 
-        def _handle(result: tuple[str, str] | None) -> None:
+        def _handle(result: tuple[str, str, list[str]] | None) -> None:
             if result is None:
                 return
-            uri, site_path = result
+            uri, site_path, cats = result
             self.notify(f"Publishing md://{uri}…", timeout=3)
-            self._run_publish(uri, site_path)
+            self._run_publish(uri, site_path, cats)
 
-        self.push_screen(PublishModal(), callback=_handle)
+        self.push_screen(PublishModal(language=self.config.language), callback=_handle)
 
     @work(thread=True, exclusive=True, group="publish")
-    def _run_publish(self, uri: str, site_path: str) -> None:
+    def _run_publish(self, uri: str, site_path: str, categories: list[str] = None) -> None:
         """Delegate publishing to the `mdp2p publish` CLI in a subprocess.
 
         Same rationale as `_run_fetch`: one process boundary, one test
@@ -987,13 +1015,14 @@ class Mdp2pTUI(App[None]):
             )
             return
 
-        if getattr(_sys, "frozen", False):
-            cmd = [_sys.executable, "publish", "--uri", uri, "--site", str(site)]
-        else:
-            cmd = [
-                _sys.executable, "-m", "mdp2p_client",
-                "publish", "--uri", uri, "--site", str(site),
-            ]
+        base = (
+            [_sys.executable]
+            if getattr(_sys, "frozen", False)
+            else [_sys.executable, "-m", "mdp2p_client"]
+        )
+        cmd = base + ["publish", "--uri", uri, "--site", str(site)]
+        if categories:
+            cmd += ["--categories", ",".join(categories)]
 
         try:
             result = subprocess.run(
