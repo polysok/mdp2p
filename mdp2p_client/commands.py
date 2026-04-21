@@ -21,6 +21,7 @@ from .i18n import SUPPORTED_LANGUAGES, load_language, t
 from .permissions import fix_permissions
 from .fetch_flow import do_fetch
 from .publish_flow import do_publish, get_pinstore_path, list_registered_sites, require_naming
+from .review_flow import do_attach_review, do_list_inbox
 from .serve_flow import do_serve
 from .ui import print_browse_table, print_pins_table, print_seeds_table
 
@@ -180,6 +181,59 @@ def cli_setup(
             return 1
 
     return 1
+
+
+async def cli_inbox(config: ClientConfig, as_json: bool = False) -> int:
+    """CLI: List pending review assignments for the local reviewer identity."""
+    import json
+    try:
+        pending = await do_list_inbox(config)
+    except Exception as e:
+        print(f"  {c.RED}inbox error: {e}{c.RESET}")
+        return 1
+
+    if as_json:
+        print(json.dumps(pending, indent=2, sort_keys=True))
+        return 0
+
+    if not pending:
+        print(f"  {c.DIM}inbox is empty{c.RESET}")
+        return 0
+
+    print(f"\n  {c.BOLD}{len(pending)} pending review(s){c.RESET}\n")
+    for entry in pending:
+        r = entry["record"]
+        deadline_str = ""
+        try:
+            import datetime as _dt
+            deadline_str = _dt.datetime.fromtimestamp(
+                int(r["deadline"])
+            ).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            pass
+        print(
+            f"  {c.BOLD}md://{r['uri']}{c.RESET}\n"
+            f"    content_key : {c.DIM}{r['content_key']}{c.RESET}\n"
+            f"    publisher   : {c.DIM}{r['publisher_public_key'][:12]}…{c.RESET}\n"
+            f"    deadline    : {deadline_str}\n"
+        )
+    return 0
+
+
+async def cli_review(
+    config: ClientConfig,
+    content_key: str,
+    verdict: str,
+    comment: str = "",
+) -> int:
+    """CLI: Sign and post a review record for a content_key."""
+    try:
+        await do_attach_review(config, content_key, verdict, comment)
+    except Exception as e:
+        print(f"  {c.RED}review failed: {e}{c.RESET}")
+        return 1
+    print(f"  {c.GREEN}review posted ({verdict}) for {content_key[:24]}…{c.RESET}")
+    return 0
 
 
 async def cli_serve(config: ClientConfig) -> int:

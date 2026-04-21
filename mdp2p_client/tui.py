@@ -308,6 +308,97 @@ class PublishModal(ModalScreen[tuple[str, str] | None]):
         self.dismiss(None)
 
 
+# ─── Reviewer inbox modal ──────────────────────────────────────────────
+
+
+class InboxModal(ModalScreen[Optional[tuple[str, dict]]]):
+    """Shows pending review assignments and lets the reviewer pick a verdict.
+
+    Dismisses with a ``(action, record)`` tuple where action is one of
+    ``"fetch" | "ok" | "warn" | "reject"``, or ``None`` on cancel. The
+    surrounding App then performs the matching subprocess call.
+    """
+
+    CSS = """
+    InboxModal { align: center middle; }
+    #dialog {
+        width: 90;
+        height: 30;
+        background: $panel;
+        border: tall $accent;
+        padding: 1 2;
+    }
+    #dialog > Label { padding: 0 1; }
+    #inbox-list { height: 1fr; margin: 1 0; }
+    #buttons { layout: horizontal; height: auto; align-horizontal: right; }
+    #buttons > Button { margin-left: 1; }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Close")]
+
+    def __init__(self, pending: list[dict]) -> None:
+        super().__init__()
+        self._pending = pending
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Label(f"[b]Inbox — {len(self._pending)} review(s) pending[/]")
+            yield ListView(id="inbox-list")
+            with Horizontal(id="buttons"):
+                yield Button("Fetch", variant="primary", id="fetch")
+                yield Button("Ok", variant="success", id="ok")
+                yield Button("Warn", variant="warning", id="warn")
+                yield Button("Reject", variant="error", id="reject")
+                yield Button("Close", variant="default", id="cancel")
+
+    async def on_mount(self) -> None:
+        list_view = self.query_one("#inbox-list", ListView)
+        if not self._pending:
+            await list_view.append(
+                ListItem(
+                    Static("inbox is empty", classes="muted"), disabled=True
+                )
+            )
+            return
+        for idx, entry in enumerate(self._pending):
+            r = entry["record"]
+            deadline_str = _format_deadline(int(r.get("deadline", 0)))
+            label = Label(
+                f"[b]md://{r.get('uri', '—')}[/]\n"
+                f"  deadline: {deadline_str}\n"
+                f"  [dim]content_key {r.get('content_key', '')[:24]}…[/]"
+            )
+            await list_view.append(ListItem(label, id=f"inbox-{idx}"))
+        list_view.focus()
+
+    def _highlighted_record(self) -> Optional[dict]:
+        list_view = self.query_one("#inbox-list", ListView)
+        idx = list_view.index
+        if idx is None or idx < 0 or idx >= len(self._pending):
+            return None
+        return self._pending[idx]["record"]
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "cancel":
+            self.dismiss(None)
+            return
+        record = self._highlighted_record()
+        if record is None:
+            self.app.notify("select an assignment first", severity="warning")
+            return
+        self.dismiss((event.button.id, record))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+def _format_deadline(ts: int) -> str:
+    if ts <= 0:
+        return "—"
+    import datetime as _dt
+    return _dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+
+
 # ─── Auto-seed confirmation modal ──────────────────────────────────────
 
 class AutoSeedModal(ModalScreen[bool]):
@@ -390,6 +481,7 @@ class Mdp2pTUI(App[None]):
         Binding("f", "fetch", "Fetch new URI"),
         Binding("p", "publish", "Publish site"),
         Binding("r", "refresh", "Refresh"),
+        Binding("i", "inbox", "Inbox"),
         Binding("slash", "focus_search", "Search"),
         Binding("ctrl+f", "fetch", show=False),
         Binding("ctrl+p", "publish", show=False),
@@ -598,6 +690,109 @@ class Mdp2pTUI(App[None]):
                 f"md://{uri}: {reason}",
                 severity="warning",
                 timeout=10,
+            )
+
+    def action_inbox(self) -> None:
+        if not self.config.reviewer_mode:
+            self.notify(
+                "reviewer mode disabled — set reviewer_mode=true in config",
+                severity="warning",
+            )
+            return
+        self._open_inbox()
+
+    @work(thread=True, exclusive=True, group="inbox")
+    def _open_inbox(self) -> None:
+        """Fetch the pending inbox in a worker thread, then show the modal."""
+        import json
+        import subprocess
+        import sys as _sys
+
+        if getattr(_sys, "frozen", False):
+            cmd = [_sys.executable, "inbox", "--json"]
+        else:
+            cmd = [_sys.executable, "-m", "mdp2p_client", "inbox", "--json"]
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True,
+                cwd=str(PROJECT_ROOT), timeout=30,
+            )
+        except Exception as e:
+            self.call_from_thread(
+                self.notify, f"inbox: {e}", severity="error", timeout=10,
+            )
+            return
+
+        if result.returncode != 0:
+            tail = (result.stderr or result.stdout).strip().splitlines()
+            reason = tail[-1] if tail else f"exit code {result.returncode}"
+            self.call_from_thread(
+                self.notify, f"inbox: {reason}", severity="warning", timeout=10,
+            )
+            return
+
+        try:
+            pending = json.loads(result.stdout)
+        except Exception as e:
+            self.call_from_thread(
+                self.notify, f"inbox: malformed JSON ({e})", severity="error",
+            )
+            return
+
+        self.call_from_thread(self._show_inbox_modal, pending)
+
+    def _show_inbox_modal(self, pending: list[dict]) -> None:
+        def _handle(result: tuple[str, dict] | None) -> None:
+            if result is None:
+                return
+            action, record = result
+            uri = record.get("uri", "")
+            content_key = record.get("content_key", "")
+            if action == "fetch":
+                self.notify(f"Fetching md://{uri}…", timeout=3)
+                self._run_fetch(uri, self.config.naming_multiaddr)
+            elif action in ("ok", "warn", "reject"):
+                self.notify(f"Posting review ({action}) for md://{uri}…", timeout=3)
+                self._run_review(content_key, action)
+
+        self.push_screen(InboxModal(pending), callback=_handle)
+
+    @work(thread=True, exclusive=True, group="review")
+    def _run_review(self, content_key: str, verdict: str) -> None:
+        import subprocess
+        import sys as _sys
+
+        if getattr(_sys, "frozen", False):
+            cmd = [
+                _sys.executable, "review",
+                "--content-key", content_key, "--verdict", verdict,
+            ]
+        else:
+            cmd = [
+                _sys.executable, "-m", "mdp2p_client", "review",
+                "--content-key", content_key, "--verdict", verdict,
+            ]
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True,
+                cwd=str(PROJECT_ROOT), timeout=30,
+            )
+        except Exception as e:
+            self.call_from_thread(
+                self.notify, f"review failed: {e}", severity="error", timeout=10,
+            )
+            return
+
+        if result.returncode == 0:
+            self.call_from_thread(
+                self.notify, f"review posted ({verdict}) ✓",
+                severity="information",
+            )
+        else:
+            tail = (result.stderr or result.stdout).strip().splitlines()
+            reason = tail[-1] if tail else f"exit code {result.returncode}"
+            self.call_from_thread(
+                self.notify, f"review: {reason}", severity="warning", timeout=10,
             )
 
     def action_publish(self) -> None:

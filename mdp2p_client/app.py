@@ -19,10 +19,12 @@ from . import colors as c
 from .commands import (
     cli_browse,
     cli_fetch,
+    cli_inbox,
     cli_list,
     cli_pins,
     cli_publish,
     cli_remove,
+    cli_review,
     cli_serve,
     cli_service,
     cli_setup,
@@ -91,6 +93,22 @@ def _build_parser() -> argparse.ArgumentParser:
         help="What to do with the service",
     )
 
+    inbox_parser = subparsers.add_parser(
+        "inbox", help="List pending review assignments for this peer"
+    )
+    inbox_parser.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
+
+    review_parser = subparsers.add_parser(
+        "review", help="Post a signed review verdict for a content_key"
+    )
+    review_parser.add_argument("--content-key", required=True)
+    review_parser.add_argument(
+        "--verdict", required=True, choices=["ok", "warn", "reject"]
+    )
+    review_parser.add_argument("--comment", default="")
+
     return parser
 
 
@@ -154,6 +172,12 @@ async def main() -> int:
     if args.command == "status":
         cli_status(config)
         return 0
+    if args.command == "inbox":
+        return await cli_inbox(config, as_json=args.json)
+    if args.command == "review":
+        return await cli_review(
+            config, args.content_key, args.verdict, args.comment
+        )
 
     parser.print_help()
     return 0
