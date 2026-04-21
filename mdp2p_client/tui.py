@@ -56,10 +56,27 @@ from mdp2p_client.config import (
     load_or_create_config,
 )
 from mdp2p_client.formatting import format_size
+from mdp2p_client.scoring import score_from_cache
+from trust import ScoreResult
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PINSTORE = str(DEFAULT_CONFIG_DIR / "known_keys.json")
+DEFAULT_TRUST_STORE = str(DEFAULT_CONFIG_DIR / "trust.json")
+DEFAULT_POLICY_PATH = str(DEFAULT_CONFIG_DIR / "policy.json")
+
+
+DECISION_BADGE = {
+    "show": "",
+    "warn": "⚠",
+    "hide": "⛔",
+}
+
+VERDICT_LABEL = {
+    "ok": "[green]ok[/]",
+    "warn": "[yellow]warn[/]",
+    "reject": "[red]reject[/]",
+}
 
 
 # ─── Data helpers ───────────────────────────────────────────────────────
@@ -74,9 +91,18 @@ class SiteView:
     file_count: int
     total_size: int
     markdown: str
+    score: Optional[ScoreResult] = None
 
     @classmethod
     def from_seeded(cls, site: SeededSite) -> "SiteView":
+        try:
+            score = score_from_cache(
+                site.site_dir,
+                policy_path=DEFAULT_POLICY_PATH,
+                trust_store_path=DEFAULT_TRUST_STORE,
+            )
+        except Exception:
+            score = None
         return cls(
             uri=site.uri,
             author=site.author,
@@ -84,7 +110,51 @@ class SiteView:
             file_count=site.file_count,
             total_size=site.total_size,
             markdown=_assemble_markdown(site.site_dir),
+            score=score,
         )
+
+    def sidebar_badge(self) -> str:
+        if self.score is None:
+            return ""
+        return DECISION_BADGE.get(self.score.decision, "")
+
+    def score_banner_markdown(self) -> str:
+        """Render a compact score banner shown above the content."""
+        if self.score is None:
+            return ""
+        decision = self.score.decision
+        breakdown = self.score.breakdown
+        reviewer_count = len(breakdown)
+        if reviewer_count == 0:
+            return (
+                "> *non revu* — aucune review pour l'instant."
+                " Le contenu peut être en attente de validation.\n\n"
+            )
+
+        header = {
+            "show": (
+                f"> ✓ revu par **{reviewer_count}** peer(s), "
+                f"score {self.score.score:.2f}\n\n"
+            ),
+            "warn": (
+                f"> ⚠ **à lire avec précaution** — score {self.score.score:.2f} "
+                f"sur {reviewer_count} review(s)\n\n"
+            ),
+            "hide": (
+                f"> ⛔ **contenu signalé comme problématique** — score "
+                f"{self.score.score:.2f} sur {reviewer_count} review(s)\n\n"
+            ),
+        }.get(decision, "")
+
+        lines = [header]
+        for contrib in breakdown:
+            verdict = VERDICT_LABEL.get(contrib.verdict, contrib.verdict)
+            lines.append(
+                f"> - {verdict} par `{contrib.source_pubkey[:10]}…` "
+                f"(poids {contrib.weight:.2f})\n"
+            )
+        lines.append("\n---\n\n")
+        return "".join(lines)
 
 
 def _assemble_markdown(site_dir: str) -> str:
@@ -407,8 +477,10 @@ class Mdp2pTUI(App[None]):
             return
 
         for site in visible:
+            badge = site.sidebar_badge()
+            badge_str = f" {badge}" if badge else ""
             label = Label(
-                f"[b]{site.author}[/]\n"
+                f"[b]{site.author}[/]{badge_str}\n"
                 f"  md://{site.uri}\n"
                 f"  [dim]{site.file_count} file(s) · {format_size(site.total_size)}[/]"
             )
@@ -420,7 +492,7 @@ class Mdp2pTUI(App[None]):
         if site is None:
             md.update(self._welcome_markdown())
             return
-        md.update(site.markdown)
+        md.update(site.score_banner_markdown() + site.markdown)
         try:
             content = self.query_one("#content", VerticalScroll)
             content.scroll_home(animate=False)

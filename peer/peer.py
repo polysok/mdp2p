@@ -451,12 +451,55 @@ class Peer:
             manifest["file_count"],
             manifest["total_size"],
         )
+
+        # Pull any review attachments alongside the bundle so the reader
+        # can compute a score later without another network round-trip.
+        # Best-effort: a failure here never fails the fetch itself.
+        await self._cache_attachments(uri, author_pub_b64, site_dir)
+
         # Join the swarm: announce ourselves as a provider (unless the
         # caller opted out — useful for one-shot visitors that would
         # otherwise leave stale records in the DHT on exit).
         if announce_after:
             await self.announce(uri)
         return True
+
+    async def _cache_attachments(
+        self, uri: str, author_pub_b64: str, site_dir: str
+    ) -> None:
+        """Fetch review attachments for this content and persist them locally.
+
+        Stored at ``{site_dir}/attachments.json`` in the same ``{record,
+        signature}`` shape the naming server returns. Scoring tools read
+        this file and re-verify signatures, so a corrupted or forged file
+        produces zero signal rather than a wrong one.
+        """
+        if self.naming_info is None:
+            return
+        content_key = compute_content_key(uri, author_pub_b64)
+        try:
+            resp = await naming_get_attachments(
+                self.host, self.naming_info, content_key
+            )
+        except Exception as e:
+            logger.debug("attachment fetch for %s failed: %s", uri, e)
+            return
+
+        entries = resp.get("records") or []
+        path = Path(site_dir) / "attachments.json"
+        try:
+            import json as _json
+            path.write_text(
+                _json.dumps(
+                    {"content_key": content_key, "records": entries},
+                    indent=2,
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+            logger.info("cached %d review attachment(s) for %s", len(entries), uri)
+        except Exception as e:
+            logger.warning("could not write attachments.json for %s: %s", uri, e)
 
     # ─── Update check ────────────────────────────────────────────────
 
