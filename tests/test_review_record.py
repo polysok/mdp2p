@@ -18,6 +18,10 @@ from review.record import (
 )
 
 
+PEER_ID = "12D3KooWTestPeerIdForReviewerRecords111111"
+ADDRS = ["/ip4/127.0.0.1/tcp/4001"]
+
+
 @pytest.fixture
 def keypair(tmp_path):
     priv_path, pub_path = generate_keypair(str(tmp_path), "reviewer")
@@ -37,14 +41,14 @@ def other_keypair(tmp_path):
 class TestReviewerOptInRoundtrip:
     def test_build_and_verify(self, keypair):
         priv, pub_b64 = keypair
-        record = build_reviewer_opt_in(pub_b64, categories=["tech", "fr"])
+        record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS, categories=["tech", "fr"])
         signature = sign_reviewer_opt_in(record, priv)
         ok, err = verify_reviewer_opt_in(record, signature)
         assert ok, err
 
     def test_empty_categories_default(self, keypair):
         priv, pub_b64 = keypair
-        record = build_reviewer_opt_in(pub_b64)
+        record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS)
         assert record["categories"] == []
         signature = sign_reviewer_opt_in(record, priv)
         ok, _ = verify_reviewer_opt_in(record, signature)
@@ -53,13 +57,13 @@ class TestReviewerOptInRoundtrip:
     def test_sign_with_wrong_key_raises(self, keypair, other_keypair):
         _, pub_b64 = keypair
         other_priv, _ = other_keypair
-        record = build_reviewer_opt_in(pub_b64)
+        record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS)
         with pytest.raises(ValueError, match="does not match"):
             sign_reviewer_opt_in(record, other_priv)
 
     def test_tampered_categories_fails_verification(self, keypair):
         priv, pub_b64 = keypair
-        record = build_reviewer_opt_in(pub_b64, categories=["tech"])
+        record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS, categories=["tech"])
         signature = sign_reviewer_opt_in(record, priv)
         record["categories"] = ["tech", "politics"]
         ok, err = verify_reviewer_opt_in(record, signature)
@@ -68,7 +72,7 @@ class TestReviewerOptInRoundtrip:
 
     def test_missing_field_rejected(self, keypair):
         priv, pub_b64 = keypair
-        record = build_reviewer_opt_in(pub_b64)
+        record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS)
         signature = sign_reviewer_opt_in(record, priv)
         del record["categories"]
         ok, err = verify_reviewer_opt_in(record, signature)
@@ -77,7 +81,7 @@ class TestReviewerOptInRoundtrip:
 
     def test_non_list_categories_rejected(self, keypair):
         priv, pub_b64 = keypair
-        record = build_reviewer_opt_in(pub_b64)
+        record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS)
         record["categories"] = "tech"
         signature = sign_reviewer_opt_in(record, priv)
         ok, err = verify_reviewer_opt_in(record, signature)
@@ -87,7 +91,7 @@ class TestReviewerOptInRoundtrip:
     def test_expired_timestamp_rejected(self, keypair):
         priv, pub_b64 = keypair
         old = int(time.time()) - 10_000
-        record = build_reviewer_opt_in(pub_b64, timestamp=old)
+        record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS, timestamp=old)
         signature = sign_reviewer_opt_in(record, priv)
         ok, err = verify_reviewer_opt_in(record, signature)
         assert not ok
@@ -96,10 +100,63 @@ class TestReviewerOptInRoundtrip:
     def test_expired_timestamp_accepted_when_drift_disabled(self, keypair):
         priv, pub_b64 = keypair
         old = int(time.time()) - 10_000
-        record = build_reviewer_opt_in(pub_b64, timestamp=old)
+        record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS, timestamp=old)
         signature = sign_reviewer_opt_in(record, priv)
         ok, _ = verify_reviewer_opt_in(record, signature, max_drift=None)
         assert ok
+
+    def test_tampered_addrs_fails_verification(self, keypair):
+        priv, pub_b64 = keypair
+        record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS)
+        signature = sign_reviewer_opt_in(record, priv)
+        record["addrs"] = ["/ip4/evil.example/tcp/1"]
+        ok, err = verify_reviewer_opt_in(record, signature)
+        assert not ok
+        assert err == "invalid signature"
+
+    def test_tampered_peer_id_fails_verification(self, keypair):
+        priv, pub_b64 = keypair
+        record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS)
+        signature = sign_reviewer_opt_in(record, priv)
+        record["peer_id"] = "12D3KooWOtherPeerIdImpostor111111111111111"
+        ok, err = verify_reviewer_opt_in(record, signature)
+        assert not ok
+        assert err == "invalid signature"
+
+    def test_missing_addrs_field_rejected(self, keypair):
+        priv, pub_b64 = keypair
+        record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS)
+        signature = sign_reviewer_opt_in(record, priv)
+        del record["addrs"]
+        ok, err = verify_reviewer_opt_in(record, signature)
+        assert not ok
+        assert "missing fields" in err
+
+    def test_non_list_addrs_rejected(self, keypair):
+        priv, pub_b64 = keypair
+        record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS)
+        record["addrs"] = "/ip4/127.0.0.1/tcp/4001"
+        signature = sign_reviewer_opt_in(record, priv)
+        ok, err = verify_reviewer_opt_in(record, signature)
+        assert not ok
+        assert "addrs must be a list" in err
+
+    def test_empty_peer_id_rejected(self, keypair):
+        priv, pub_b64 = keypair
+        record = build_reviewer_opt_in(pub_b64, "", ADDRS)
+        signature = sign_reviewer_opt_in(record, priv)
+        ok, err = verify_reviewer_opt_in(record, signature)
+        assert not ok
+        assert "peer_id must be a non-empty string" in err
+
+    def test_empty_addrs_list_allowed(self, keypair):
+        priv, pub_b64 = keypair
+        # A reviewer with no known addrs is valid; the publisher just
+        # won't be able to dial them until they re-announce with addrs.
+        record = build_reviewer_opt_in(pub_b64, PEER_ID, [])
+        signature = sign_reviewer_opt_in(record, priv)
+        ok, err = verify_reviewer_opt_in(record, signature)
+        assert ok, err
 
 
 class TestReviewRecordRoundtrip:

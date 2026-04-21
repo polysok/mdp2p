@@ -33,6 +33,10 @@ from review import (
 )
 
 
+PEER_ID = "12D3KooWTestPeerIdForNamingReviewerTests01"
+ADDRS = ["/ip4/127.0.0.1/tcp/4001"]
+
+
 def _fresh_host():
     return new_host(key_pair=create_new_key_pair(secrets.token_bytes(32)))
 
@@ -94,7 +98,7 @@ def _run(coro_factory):
 
 def test_register_and_list_reviewer(tmp_path):
     priv, pub_b64 = _make_reviewer()
-    record = build_reviewer_opt_in(pub_b64, categories=["tech"])
+    record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS, categories=["tech"])
     signature = sign_reviewer_opt_in(record, priv)
 
     async def main():
@@ -129,7 +133,7 @@ def test_multiple_reviewers_registered(tmp_path):
     async def main():
         async with env(tmp_path) as (client, server_info, _store):
             for priv, pub in reviewers:
-                record = build_reviewer_opt_in(pub)
+                record = build_reviewer_opt_in(pub, PEER_ID, ADDRS)
                 sig = sign_reviewer_opt_in(record, priv)
                 resp = await client_register_reviewer(client, server_info, record, sig)
                 assert resp["type"] == "ok"
@@ -143,7 +147,7 @@ def test_multiple_reviewers_registered(tmp_path):
 
 def test_listed_entries_pass_local_verification(tmp_path):
     priv, pub_b64 = _make_reviewer()
-    record = build_reviewer_opt_in(pub_b64, categories=["fr"])
+    record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS, categories=["fr"])
     signature = sign_reviewer_opt_in(record, priv)
 
     async def main():
@@ -163,7 +167,7 @@ def test_listed_entries_pass_local_verification(tmp_path):
 
 def test_tampered_signature_rejected(tmp_path):
     priv, pub_b64 = _make_reviewer()
-    record = build_reviewer_opt_in(pub_b64, categories=["tech"])
+    record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS, categories=["tech"])
     signature = sign_reviewer_opt_in(record, priv)
     record["categories"] = ["politics"]  # post-sign tamper
 
@@ -179,9 +183,11 @@ def test_tampered_signature_rejected(tmp_path):
 def test_stale_timestamp_rejected(tmp_path):
     priv, pub_b64 = _make_reviewer()
     now = int(time.time())
-    first = build_reviewer_opt_in(pub_b64, timestamp=now)
+    first = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS, timestamp=now)
     sig_first = sign_reviewer_opt_in(first, priv)
-    stale = build_reviewer_opt_in(pub_b64, categories=["new"], timestamp=now)
+    stale = build_reviewer_opt_in(
+        pub_b64, PEER_ID, ADDRS, categories=["new"], timestamp=now
+    )
     sig_stale = sign_reviewer_opt_in(stale, priv)
 
     async def main():
@@ -199,10 +205,16 @@ def test_stale_timestamp_rejected(tmp_path):
 def test_newer_update_accepted(tmp_path):
     priv, pub_b64 = _make_reviewer()
     now = int(time.time())
-    v1 = build_reviewer_opt_in(pub_b64, categories=["tech"], timestamp=now)
+    v1 = build_reviewer_opt_in(
+        pub_b64, PEER_ID, ADDRS, categories=["tech"], timestamp=now
+    )
     sig_v1 = sign_reviewer_opt_in(v1, priv)
     v2 = build_reviewer_opt_in(
-        pub_b64, categories=["tech", "fr"], timestamp=now + 1
+        pub_b64,
+        PEER_ID,
+        ["/ip4/127.0.0.1/tcp/4002"],  # reviewer moved addresses
+        categories=["tech", "fr"],
+        timestamp=now + 1,
     )
     sig_v2 = sign_reviewer_opt_in(v2, priv)
 
@@ -227,7 +239,7 @@ def test_newer_update_accepted(tmp_path):
 
 def test_register_reviewer_errors_without_registry(tmp_path):
     priv, pub_b64 = _make_reviewer()
-    record = build_reviewer_opt_in(pub_b64)
+    record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS)
     signature = sign_reviewer_opt_in(record, priv)
 
     async def main():
@@ -262,7 +274,7 @@ def test_list_reviewers_returns_empty_without_registry(tmp_path):
 
 def test_reviewer_registry_survives_restart(tmp_path):
     priv, pub_b64 = _make_reviewer()
-    record = build_reviewer_opt_in(pub_b64, categories=["tech"])
+    record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS, categories=["tech"])
     signature = sign_reviewer_opt_in(record, priv)
 
     async def write():

@@ -40,16 +40,23 @@ VALID_VERDICTS = ("ok", "warn", "reject")
 
 def build_reviewer_opt_in(
     public_key_b64: str,
+    peer_id: str,
+    addrs: list[str],
     categories: Optional[list[str]] = None,
     timestamp: Optional[int] = None,
 ) -> dict:
     """Build an unsigned reviewer opt-in record.
 
-    `categories` is an optional filter — an empty or missing list means the
-    reviewer accepts requests for any category.
+    `peer_id` is the libp2p identity, stable across restarts. `addrs` is the
+    reviewer's current dialable multiaddrs — this field is expected to be
+    refreshed by the reviewer daemon on address changes and periodically
+    as a heartbeat. `categories` is an optional interest filter (empty
+    means accept any).
     """
     return {
         "public_key": public_key_b64,
+        "peer_id": peer_id,
+        "addrs": list(addrs),
         "categories": list(categories) if categories else [],
         "timestamp": timestamp if timestamp is not None else int(time.time()),
     }
@@ -70,13 +77,19 @@ def verify_reviewer_opt_in(
     max_drift: Optional[int] = MAX_REVIEW_DRIFT_SECONDS,
 ) -> Tuple[bool, str]:
     """Verify an opt-in record against its embedded public key."""
-    required = ("public_key", "categories", "timestamp")
+    required = ("public_key", "peer_id", "addrs", "categories", "timestamp")
     missing = [f for f in required if f not in record]
     if missing:
         return False, f"missing fields: {', '.join(missing)}"
 
     if not isinstance(record["categories"], list):
         return False, "categories must be a list"
+    if not isinstance(record["addrs"], list) or not all(
+        isinstance(a, str) for a in record["addrs"]
+    ):
+        return False, "addrs must be a list of strings"
+    if not isinstance(record["peer_id"], str) or not record["peer_id"]:
+        return False, "peer_id must be a non-empty string"
 
     try:
         if max_drift is not None:
