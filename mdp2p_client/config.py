@@ -16,6 +16,7 @@ from typing import Optional
 DEFAULT_CONFIG_DIR = Path.home() / ".mdp2p"
 DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.json"
 DEFAULT_DATA_DIR = DEFAULT_CONFIG_DIR / "sites"
+DEFAULT_REVIEWER_DIR = DEFAULT_CONFIG_DIR / "reviewer"
 
 # Public peer-zero shipped with the project. Users fetching without any
 # explicit configuration reach the official relay out of the box. The /ip4/
@@ -39,6 +40,9 @@ class ClientConfig:
     port: int = 0
     language: str = "fr"
     auto_seed_prompted: bool = False
+    reviewer_mode: bool = False
+    reviewer_dir: str = str(DEFAULT_REVIEWER_DIR)
+    reviewer_categories: list[str] = field(default_factory=list)
 
     def save(self, path: Optional[Path] = None):
         """Save configuration to file."""
