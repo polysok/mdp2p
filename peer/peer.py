@@ -181,9 +181,8 @@ class Peer:
             raise RuntimeError(f"naming register failed: {resp.get('msg')}")
         logger.info("naming registered: %s → %s", uri, manifest_ref[:12])
 
-        content_key = compute_content_key(uri, pub_b64)
         await self._solicit_reviews(
-            content_key=content_key,
+            uri=uri,
             publisher_pub_b64=pub_b64,
             publisher_private_key=private_key,
             review_count=review_count,
@@ -199,7 +198,7 @@ class Peer:
 
     async def _solicit_reviews(
         self,
-        content_key: str,
+        uri: str,
         publisher_pub_b64: str,
         publisher_private_key,
         review_count: int,
@@ -224,6 +223,7 @@ class Peer:
             logger.info("no fresh reviewers available, skipping assignment")
             return
 
+        content_key = compute_content_key(uri, publisher_pub_b64)
         selected = select_reviewers(content_key, pool, review_count)
         if not selected:
             logger.info("selection yielded no reviewer, skipping assignment")
@@ -232,7 +232,7 @@ class Peer:
         import time as _time
         deadline = int(_time.time()) + review_deadline_days * 86400
         assignment = build_review_assignment(
-            content_key=content_key,
+            uri=uri,
             publisher_pubkey_b64=publisher_pub_b64,
             reviewer_pubkeys_b64=selected,
             deadline=deadline,

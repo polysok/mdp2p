@@ -165,14 +165,14 @@ async def _register_reviewer(client, server_info) -> tuple[Ed25519PrivateKey, st
 def test_solicit_reviews_posts_assignment_when_pool_is_nonempty(tmp_path):
     publisher_priv = Ed25519PrivateKey.generate()
     publisher_pub = public_key_to_b64(publisher_priv.public_key())
-    content_key = "/mdp2p/" + "a" * 64
+    uri = "test-blog-a"
 
     async def main():
         async with solicit_env(tmp_path) as (peer, client, server_info):
             _, rev_pub = await _register_reviewer(client, server_info)
 
             await peer._solicit_reviews(
-                content_key=content_key,
+                uri=uri,
                 publisher_pub_b64=publisher_pub,
                 publisher_private_key=publisher_priv,
                 review_count=3,
@@ -183,7 +183,8 @@ def test_solicit_reviews_posts_assignment_when_pool_is_nonempty(tmp_path):
             listing = await client_list_assignments(client, server_info, rev_pub)
             assert len(listing["records"]) == 1
             record = listing["records"][0]["record"]
-            assert record["content_key"] == content_key
+            assert record["uri"] == uri
+            assert record["publisher_public_key"] == publisher_pub
             assert rev_pub in record["reviewer_public_keys"]
 
     _run(main)
@@ -192,14 +193,14 @@ def test_solicit_reviews_posts_assignment_when_pool_is_nonempty(tmp_path):
 def test_solicit_reviews_skips_gracefully_when_pool_empty(tmp_path):
     publisher_priv = Ed25519PrivateKey.generate()
     publisher_pub = public_key_to_b64(publisher_priv.public_key())
-    content_key = "/mdp2p/" + "b" * 64
+    uri = "test-blog-b"
 
     async def main():
         async with solicit_env(tmp_path) as (peer, client, server_info):
             # No reviewer registered. The call must return cleanly with
             # no exceptions raised — publication should not fail.
             await peer._solicit_reviews(
-                content_key=content_key,
+                uri=uri,
                 publisher_pub_b64=publisher_pub,
                 publisher_private_key=publisher_priv,
                 review_count=3,
@@ -213,24 +214,16 @@ def test_solicit_reviews_skips_gracefully_when_pool_empty(tmp_path):
 def test_solicit_reviews_honours_freshness_filter(tmp_path):
     publisher_priv = Ed25519PrivateKey.generate()
     publisher_pub = public_key_to_b64(publisher_priv.public_key())
-    content_key = "/mdp2p/" + "c" * 64
+    uri = "test-blog-c"
 
     async def main():
         async with solicit_env(tmp_path) as (peer, client, server_info):
-            # Register a reviewer whose record is stale (manually-crafted
-            # timestamp well in the past — the naming server bypasses
-            # drift for old registrations only when max_drift is disabled,
-            # so we use a just-now record and rely on the freshness filter
-            # to exclude it).
             _, rev_pub = await _register_reviewer(client, server_info)
 
-            # freshness_seconds = 0 rejects everything not stamped "now".
-            # With our test running immediately after register, the entry
-            # is fresh — so use a negative threshold to force rejection.
-            # Simpler: use freshness = 1 and wait 2s so the entry is stale.
+            # Wait so the registered entry is older than the freshness window.
             await trio.sleep(2)
             await peer._solicit_reviews(
-                content_key=content_key,
+                uri=uri,
                 publisher_pub_b64=publisher_pub,
                 publisher_private_key=publisher_priv,
                 review_count=3,
@@ -247,7 +240,7 @@ def test_solicit_reviews_honours_freshness_filter(tmp_path):
 def test_solicit_reviews_respects_review_count_cap(tmp_path):
     publisher_priv = Ed25519PrivateKey.generate()
     publisher_pub = public_key_to_b64(publisher_priv.public_key())
-    content_key = "/mdp2p/" + "d" * 64
+    uri = "test-blog-d"
 
     async def main():
         async with solicit_env(tmp_path) as (peer, client, server_info):
@@ -257,7 +250,7 @@ def test_solicit_reviews_respects_review_count_cap(tmp_path):
                 reviewer_pubs.append(pub)
 
             await peer._solicit_reviews(
-                content_key=content_key,
+                uri=uri,
                 publisher_pub_b64=publisher_pub,
                 publisher_private_key=publisher_priv,
                 review_count=2,

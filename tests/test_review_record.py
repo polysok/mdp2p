@@ -246,7 +246,7 @@ class TestReviewAssignmentRoundtrip:
     def test_build_and_verify(self, keypair):
         priv, pub_b64 = keypair
         record = build_review_assignment(
-            content_key="/mdp2p/abc",
+            uri="blog",
             publisher_pubkey_b64=pub_b64,
             reviewer_pubkeys_b64=["r1", "r2", "r3"],
             deadline=self.DEADLINE,
@@ -258,7 +258,7 @@ class TestReviewAssignmentRoundtrip:
     def test_tampered_reviewer_list_fails(self, keypair):
         priv, pub_b64 = keypair
         record = build_review_assignment(
-            "/mdp2p/abc", pub_b64, ["r1", "r2"], self.DEADLINE
+            "blog", pub_b64, ["r1", "r2"], self.DEADLINE
         )
         signature = sign_review_assignment(record, priv)
         record["reviewer_public_keys"] = ["r1", "r2", "attacker"]
@@ -269,7 +269,7 @@ class TestReviewAssignmentRoundtrip:
     def test_tampered_deadline_fails(self, keypair):
         priv, pub_b64 = keypair
         record = build_review_assignment(
-            "/mdp2p/abc", pub_b64, ["r1"], self.DEADLINE
+            "blog", pub_b64, ["r1"], self.DEADLINE
         )
         signature = sign_review_assignment(record, priv)
         record["deadline"] = self.DEADLINE + 365 * 86400
@@ -281,7 +281,7 @@ class TestReviewAssignmentRoundtrip:
         _, pub_b64 = keypair
         other_priv, _ = other_keypair
         record = build_review_assignment(
-            "/mdp2p/abc", pub_b64, ["r1"], self.DEADLINE
+            "blog", pub_b64, ["r1"], self.DEADLINE
         )
         with pytest.raises(ValueError, match="does not match"):
             sign_review_assignment(record, other_priv)
@@ -289,12 +289,12 @@ class TestReviewAssignmentRoundtrip:
     def test_zero_deadline_rejected_at_build(self, keypair):
         _, pub_b64 = keypair
         with pytest.raises(ValueError, match="deadline"):
-            build_review_assignment("/mdp2p/abc", pub_b64, ["r1"], deadline=0)
+            build_review_assignment("blog", pub_b64, ["r1"], deadline=0)
 
     def test_missing_field_rejected(self, keypair):
         priv, pub_b64 = keypair
         record = build_review_assignment(
-            "/mdp2p/abc", pub_b64, ["r1"], self.DEADLINE
+            "blog", pub_b64, ["r1"], self.DEADLINE
         )
         signature = sign_review_assignment(record, priv)
         del record["deadline"]
@@ -305,7 +305,7 @@ class TestReviewAssignmentRoundtrip:
     def test_non_list_reviewers_rejected(self, keypair):
         priv, pub_b64 = keypair
         record = build_review_assignment(
-            "/mdp2p/abc", pub_b64, ["r1"], self.DEADLINE
+            "blog", pub_b64, ["r1"], self.DEADLINE
         )
         record["reviewer_public_keys"] = "r1"
         signature = sign_review_assignment(record, priv)
@@ -317,7 +317,7 @@ class TestReviewAssignmentRoundtrip:
         priv, pub_b64 = keypair
         old = int(time.time()) - 10_000
         record = build_review_assignment(
-            "/mdp2p/abc", pub_b64, ["r1"], self.DEADLINE, timestamp=old
+            "blog", pub_b64, ["r1"], self.DEADLINE, timestamp=old
         )
         signature = sign_review_assignment(record, priv)
         ok, err = verify_review_assignment(record, signature)

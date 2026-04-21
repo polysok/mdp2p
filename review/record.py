@@ -31,6 +31,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from bundle._canonical import _canonical_json
 from bundle.crypto import b64_to_public_key, public_key_to_b64
+from bundle.manifest import compute_content_key
 
 
 MAX_REVIEW_DRIFT_SECONDS = 300
@@ -119,13 +120,17 @@ def verify_reviewer_opt_in(
 
 
 def build_review_assignment(
-    content_key: str,
+    uri: str,
     publisher_pubkey_b64: str,
     reviewer_pubkeys_b64: list[str],
     deadline: int,
     timestamp: Optional[int] = None,
 ) -> dict:
     """Build an unsigned review assignment record.
+
+    `uri` and `publisher_pubkey_b64` together identify the content the
+    reviewer is expected to fetch; `content_key` is derived from them so
+    assignments and attachments share a consistent primary key.
 
     `deadline` is the unix timestamp after which the assignment expires —
     reviewers should ignore assignments past this point. `reviewer_pubkeys`
@@ -134,8 +139,11 @@ def build_review_assignment(
     """
     if deadline <= 0:
         raise ValueError("deadline must be a positive unix timestamp")
+    if not uri:
+        raise ValueError("uri is required")
     return {
-        "content_key": content_key,
+        "uri": uri,
+        "content_key": compute_content_key(uri, publisher_pubkey_b64),
         "publisher_public_key": publisher_pubkey_b64,
         "reviewer_public_keys": list(reviewer_pubkeys_b64),
         "deadline": int(deadline),
@@ -161,6 +169,7 @@ def verify_review_assignment(
 ) -> Tuple[bool, str]:
     """Verify a review assignment against its embedded publisher public key."""
     required = (
+        "uri",
         "content_key",
         "publisher_public_key",
         "reviewer_public_keys",
@@ -177,6 +186,12 @@ def verify_review_assignment(
         return False, "reviewer_public_keys must be a list of strings"
     if not isinstance(record["deadline"], int) or record["deadline"] <= 0:
         return False, "deadline must be a positive integer"
+
+    expected_content_key = compute_content_key(
+        record.get("uri", ""), record.get("publisher_public_key", "")
+    )
+    if record.get("content_key") != expected_content_key:
+        return False, "content_key does not match (uri, publisher_public_key)"
 
     try:
         if max_drift is not None:

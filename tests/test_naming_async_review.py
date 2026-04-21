@@ -19,7 +19,7 @@ from libp2p.utils.address_validation import find_free_port
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from bundle import public_key_to_b64
+from bundle import compute_content_key, public_key_to_b64
 from naming import (
     AssignmentStore,
     AttachmentStore,
@@ -118,7 +118,7 @@ def test_post_and_list_assignment(tmp_path):
     deadline = int(time.time()) + 3 * 86400
 
     record = build_review_assignment(
-        content_key="/mdp2p/abc",
+        uri="blog-abc",
         publisher_pubkey_b64=publisher_pub,
         reviewer_pubkeys_b64=[reviewer_pub_1, reviewer_pub_2],
         deadline=deadline,
@@ -129,7 +129,7 @@ def test_post_and_list_assignment(tmp_path):
         async with env(tmp_path) as (client, server_info, _, _):
             resp = await client_post_assignment(client, server_info, record, signature)
             assert resp["type"] == "ok"
-            assert resp["content_key"] == "/mdp2p/abc"
+            assert resp["content_key"] == compute_content_key("blog-abc", publisher_pub)
 
             for reviewer in (reviewer_pub_1, reviewer_pub_2):
                 listing = await client_list_assignments(client, server_info, reviewer)
@@ -147,7 +147,7 @@ def test_assignment_not_visible_to_non_selected_reviewer(tmp_path):
     deadline = int(time.time()) + 3 * 86400
 
     record = build_review_assignment(
-        "/mdp2p/abc", publisher_pub, [selected], deadline
+        "blog-abc", publisher_pub, [selected], deadline
     )
     signature = sign_review_assignment(record, publisher_priv)
 
@@ -166,7 +166,7 @@ def test_post_assignment_rejects_tampered_signature(tmp_path):
     deadline = int(time.time()) + 3 * 86400
 
     record = build_review_assignment(
-        "/mdp2p/abc", publisher_pub, [reviewer], deadline
+        "blog-abc", publisher_pub, [reviewer], deadline
     )
     signature = sign_review_assignment(record, publisher_priv)
     record["reviewer_public_keys"] = [reviewer, "attacker"]  # post-sign tamper
@@ -187,11 +187,11 @@ def test_newer_assignment_replaces_older_for_same_content(tmp_path):
     deadline = now + 3 * 86400
 
     first = build_review_assignment(
-        "/mdp2p/abc", publisher_pub, [reviewer], deadline, timestamp=now
+        "blog-abc", publisher_pub, [reviewer], deadline, timestamp=now
     )
     sig_first = sign_review_assignment(first, publisher_priv)
     second = build_review_assignment(
-        "/mdp2p/abc",
+        "blog-abc",
         publisher_pub,
         [reviewer, "extra"],  # selection changed
         deadline,
@@ -219,15 +219,15 @@ def test_distinct_content_keys_coexist_in_inbox(tmp_path):
 
     async def main():
         async with env(tmp_path) as (client, server_info, _, _):
-            for ck in ("/mdp2p/a", "/mdp2p/b", "/mdp2p/c"):
+            for ck in ("site-a", "site-b", "site-c"):
                 r = build_review_assignment(ck, publisher_pub, [reviewer], deadline)
                 sig = sign_review_assignment(r, publisher_priv)
                 await client_post_assignment(client, server_info, r, sig)
 
             listing = await client_list_assignments(client, server_info, reviewer)
             assert len(listing["records"]) == 3
-            keys = {e["record"]["content_key"] for e in listing["records"]}
-            assert keys == {"/mdp2p/a", "/mdp2p/b", "/mdp2p/c"}
+            uris = {e["record"]["uri"] for e in listing["records"]}
+            assert uris == {"site-a", "site-b", "site-c"}
 
     _run(main)
 
@@ -238,7 +238,7 @@ def test_post_assignment_errors_without_inbox(tmp_path):
     deadline = int(time.time()) + 3 * 86400
 
     record = build_review_assignment(
-        "/mdp2p/abc", publisher_pub, [reviewer], deadline
+        "blog-abc", publisher_pub, [reviewer], deadline
     )
     signature = sign_review_assignment(record, publisher_priv)
 
@@ -397,7 +397,7 @@ def test_assignment_inbox_survives_restart(tmp_path):
     deadline = int(time.time()) + 3 * 86400
 
     record = build_review_assignment(
-        "/mdp2p/abc", publisher_pub, [reviewer], deadline
+        "blog-abc", publisher_pub, [reviewer], deadline
     )
     signature = sign_review_assignment(record, publisher_priv)
 
@@ -412,7 +412,7 @@ def test_assignment_inbox_survives_restart(tmp_path):
     assert assignments_file.exists()
     raw = json.loads(assignments_file.read_text())
     assert reviewer in raw
-    assert "/mdp2p/abc" in raw[reviewer]
+    assert compute_content_key("blog-abc", publisher_pub) in raw[reviewer]
 
     async def read_back():
         async with env(tmp_path) as (client, server_info, _, _):
