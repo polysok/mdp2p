@@ -61,8 +61,22 @@ async def cli_browse(config: ClientConfig) -> int:
         return 1
 
 
-async def cli_publish(config: ClientConfig, uri: str, site_dir: str) -> int:
+async def cli_publish(
+    config: ClientConfig,
+    uri: str,
+    site_dir: str,
+    categories: Optional[list[str]] = None,
+) -> int:
     """CLI: Publish a new site."""
+    from review import validate_categories
+
+    if categories is not None:
+        try:
+            validate_categories(categories)
+        except ValueError as e:
+            print(f"  {c.RED}{e}{c.RESET}")
+            return 1
+
     site_path = Path(site_dir).resolve()
 
     if not site_path.exists():
@@ -79,7 +93,7 @@ async def cli_publish(config: ClientConfig, uri: str, site_dir: str) -> int:
 
     for attempt in range(2):
         try:
-            await do_publish(config, uri, site_path)
+            await do_publish(config, uri, site_path, categories=categories)
             print(f"\n  {c.GREEN}{c.BOLD}{t('add_success')}{c.RESET}")
             svc.offer_interactive(config)
             return 0

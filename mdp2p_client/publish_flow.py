@@ -36,7 +36,12 @@ def require_naming(config: ClientConfig) -> str:
     return config.naming_multiaddr
 
 
-async def do_publish(config: ClientConfig, uri: str, site_path: Path) -> None:
+async def do_publish(
+    config: ClientConfig,
+    uri: str,
+    site_path: Path,
+    categories: list[str] = None,
+) -> None:
     """Core publish logic shared by interactive and CLI modes."""
     uri = strip_uri_scheme(uri)
     key_name = make_key_name(config.author, uri)
@@ -66,7 +71,13 @@ async def do_publish(config: ClientConfig, uri: str, site_path: Path) -> None:
         port=config.port,
         naming_info=naming_info,
     ) as peer:
-        await peer.publish(uri, config.author, str(peer_data_dir), str(priv_path))
+        await peer.publish(
+            uri,
+            config.author,
+            str(peer_data_dir),
+            str(priv_path),
+            categories=categories,
+        )
 
 
 @asynccontextmanager

@@ -43,10 +43,12 @@ PEER_ID = "12D3KooWExtractFreshReviewerTestPeerId1111"
 ADDRS = ["/ip4/127.0.0.1/tcp/4001"]
 
 
-def _signed_entry(timestamp: int) -> dict:
+def _signed_entry(timestamp: int, categories=None) -> dict:
     priv = Ed25519PrivateKey.generate()
     pub_b64 = public_key_to_b64(priv.public_key())
-    record = build_reviewer_opt_in(pub_b64, PEER_ID, ADDRS, timestamp=timestamp)
+    record = build_reviewer_opt_in(
+        pub_b64, PEER_ID, ADDRS, categories=categories, timestamp=timestamp
+    )
     signature = sign_reviewer_opt_in(record, priv)
     return {"record": record, "signature": signature}, pub_b64
 
@@ -101,6 +103,78 @@ class TestExtractFreshReviewerPool:
             None,
         )
         assert pool == [pub]
+
+
+class TestCategoryFilter:
+    def _mkentries(self, *cats):
+        now = int(time.time())
+        out = []
+        for c in cats:
+            entry, pub = _signed_entry(now, categories=list(c) if c else None)
+            out.append((entry, pub))
+        return out
+
+    def test_reviewer_with_no_filter_matches_any_content(self):
+        entries = self._mkentries(None)
+        pool = _extract_fresh_reviewer_pool(
+            [e for e, _ in entries], None,
+            content_categories=["biology"],
+        )
+        assert pool == [entries[0][1]]
+
+    def test_matching_category_included(self):
+        entries = self._mkentries(["computing"])
+        pool = _extract_fresh_reviewer_pool(
+            [e for e, _ in entries], None,
+            content_categories=["computing"],
+        )
+        assert pool == [entries[0][1]]
+
+    def test_non_overlapping_category_excluded(self):
+        entries = self._mkentries(["computing"])
+        pool = _extract_fresh_reviewer_pool(
+            [e for e, _ in entries], None,
+            content_categories=["biology"],
+        )
+        assert pool == []
+
+    def test_partial_overlap_includes_reviewer(self):
+        entries = self._mkentries(["computing", "biology"])
+        pool = _extract_fresh_reviewer_pool(
+            [e for e, _ in entries], None,
+            content_categories=["biology", "medicine"],
+        )
+        assert pool == [entries[0][1]]
+
+    def test_reviewer_with_filter_rejects_empty_content(self):
+        entries = self._mkentries(["computing"])
+        pool = _extract_fresh_reviewer_pool(
+            [e for e, _ in entries], None,
+            content_categories=[],
+        )
+        assert pool == []
+
+    def test_none_content_disables_filtering(self):
+        entries = self._mkentries(["computing"], ["biology"], None)
+        pool = _extract_fresh_reviewer_pool(
+            [e for e, _ in entries], None,
+        )
+        assert len(pool) == 3
+
+    def test_mixed_pool_filtering(self):
+        entries = self._mkentries(
+            None,                      # accepts any → IN
+            ["computing"],             # matches → IN
+            ["biology"],               # no match → OUT
+            ["ai_ml", "other"],        # no match → OUT
+            ["computing", "biology"],  # partial match → IN
+        )
+        pool = _extract_fresh_reviewer_pool(
+            [e for e, _ in entries], None,
+            content_categories=["computing"],
+        )
+        expected = {entries[0][1], entries[1][1], entries[4][1]}
+        assert set(pool) == expected
 
 
 # ─── _attachments_to_signals ───────────────────────────────────────────
@@ -233,6 +307,7 @@ def test_solicit_reviews_posts_assignment_when_pool_is_nonempty(tmp_path):
                 uri=uri,
                 publisher_pub_b64=publisher_pub,
                 publisher_private_key=publisher_priv,
+                content_categories=None,
                 review_count=3,
                 review_deadline_days=3,
                 freshness_seconds=None,
@@ -261,6 +336,7 @@ def test_solicit_reviews_skips_gracefully_when_pool_empty(tmp_path):
                 uri=uri,
                 publisher_pub_b64=publisher_pub,
                 publisher_private_key=publisher_priv,
+                content_categories=None,
                 review_count=3,
                 review_deadline_days=3,
                 freshness_seconds=None,
@@ -284,6 +360,7 @@ def test_solicit_reviews_honours_freshness_filter(tmp_path):
                 uri=uri,
                 publisher_pub_b64=publisher_pub,
                 publisher_private_key=publisher_priv,
+                content_categories=None,
                 review_count=3,
                 review_deadline_days=3,
                 freshness_seconds=1,
@@ -311,6 +388,7 @@ def test_solicit_reviews_respects_review_count_cap(tmp_path):
                 uri=uri,
                 publisher_pub_b64=publisher_pub,
                 publisher_private_key=publisher_priv,
+                content_categories=None,
                 review_count=2,
                 review_deadline_days=3,
                 freshness_seconds=None,

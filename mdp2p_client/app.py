@@ -52,6 +52,11 @@ def _build_parser() -> argparse.ArgumentParser:
     publish_parser = subparsers.add_parser("publish", help="Publish a new site")
     publish_parser.add_argument("--uri", required=True, help="Site URI (e.g., md://blog)")
     publish_parser.add_argument("--site", required=True, help="Directory containing .md files")
+    publish_parser.add_argument(
+        "--categories",
+        help="Comma-separated category slugs (e.g., computing,education). "
+        "Defaults to 'other' when omitted.",
+    )
 
     fetch_parser = subparsers.add_parser(
         "fetch", help="Download a site from the network"
@@ -197,7 +202,10 @@ async def main() -> int:
     if args.command == "browse":
         return await cli_browse(config)
     if args.command == "publish":
-        return await cli_publish(config, args.uri, args.site)
+        cats = None
+        if getattr(args, "categories", None):
+            cats = [s.strip() for s in args.categories.split(",") if s.strip()]
+        return await cli_publish(config, args.uri, args.site, categories=cats)
     if args.command == "fetch":
         return await cli_fetch(config, args.uri, args.naming)
     if args.command == "serve":

@@ -141,6 +141,7 @@ class Peer:
         author: str,
         site_dir: str,
         private_key_path: str,
+        categories: Optional[list[str]] = None,
         review_count: int = DEFAULT_REVIEW_COUNT,
         review_deadline_days: int = DEFAULT_REVIEW_DEADLINE_DAYS,
         reviewer_freshness_seconds: Optional[int] = None,
@@ -174,7 +175,11 @@ class Peer:
                 pass
 
         manifest = create_manifest(
-            site_dir_resolved, uri=uri, author=author, version=version
+            site_dir_resolved,
+            uri=uri,
+            author=author,
+            version=version,
+            categories=categories,
         )
         manifest, signature = sign_manifest(manifest, private_key)
         save_bundle(site_dir_resolved, manifest, signature)
@@ -197,6 +202,7 @@ class Peer:
             uri=uri,
             publisher_pub_b64=pub_b64,
             publisher_private_key=private_key,
+            content_categories=list(manifest.get("categories") or []),
             review_count=review_count,
             review_deadline_days=review_deadline_days,
             freshness_seconds=reviewer_freshness_seconds,
@@ -213,6 +219,7 @@ class Peer:
         uri: str,
         publisher_pub_b64: str,
         publisher_private_key,
+        content_categories: Optional[list[str]],
         review_count: int,
         review_deadline_days: int,
         freshness_seconds: Optional[int],
@@ -230,9 +237,14 @@ class Peer:
             return
 
         entries = listing.get("records") or []
-        pool = _extract_fresh_reviewer_pool(entries, freshness_seconds)
+        pool = _extract_fresh_reviewer_pool(
+            entries, freshness_seconds, content_categories
+        )
         if not pool:
-            logger.info("no fresh reviewers available, skipping assignment")
+            logger.info(
+                "no reviewer matches content categories %s, skipping assignment",
+                content_categories,
+            )
             return
 
         content_key = compute_content_key(uri, publisher_pub_b64)
@@ -635,12 +647,16 @@ def _attachments_to_signals(
 def _extract_fresh_reviewer_pool(
     entries: list[dict],
     freshness_seconds: Optional[int],
+    content_categories: Optional[list[str]] = None,
 ) -> list[str]:
     """Extract verified reviewer public keys from a list_reviewers listing.
 
     Drops entries with invalid signatures; optionally drops those whose
-    last-known timestamp is older than `freshness_seconds`. Returning an
-    empty list is valid (caller handles it gracefully).
+    last-known timestamp is older than `freshness_seconds`. When
+    ``content_categories`` is given, also drops reviewers whose declared
+    categories do not intersect the content's (reviewers with no
+    declared categories accept anything). Returning an empty list is
+    valid — the caller handles it gracefully.
     """
     import time as _time
 
@@ -662,6 +678,14 @@ def _extract_fresh_reviewer_pool(
             if now - int(record.get("timestamp", 0)) > freshness_seconds:
                 continue
         pubkey = record.get("public_key", "")
-        if pubkey:
-            pool.append(pubkey)
+        if not pubkey:
+            continue
+        if content_categories is not None:
+            reviewer_cats = record.get("categories") or []
+            if reviewer_cats:
+                # Reviewer has a filter; need overlap with content.
+                if not (content_categories and (set(reviewer_cats) & set(content_categories))):
+                    continue
+            # else: reviewer has no filter → accepts anything.
+        pool.append(pubkey)
     return pool
