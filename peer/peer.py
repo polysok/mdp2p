@@ -40,6 +40,7 @@ from bundle import (
     verify_name_record,
 )
 from naming import (
+    client_get_attachments as naming_get_attachments,
     client_list_reviewers as naming_list_reviewers,
     client_post_assignment as naming_post_assignment,
     client_register as naming_register,
@@ -50,7 +51,16 @@ from review import (
     build_review_assignment,
     select_reviewers,
     sign_review_assignment,
+    verify_review_record,
     verify_reviewer_opt_in,
+)
+from trust import (
+    Policy,
+    ScoreResult,
+    Signal,
+    load_policy,
+    load_store,
+    score_content as _score_content_fn,
 )
 from wire import recv_framed_json, send_framed_json
 
@@ -65,6 +75,8 @@ logger = logging.getLogger("mdp2p.peer")
 
 DEFAULT_DATA_DIR = "./peer_data"
 DEFAULT_PINSTORE = str(Path.home() / ".mdp2p" / "known_keys.json")
+DEFAULT_TRUST_STORE = str(Path.home() / ".mdp2p" / "trust.json")
+DEFAULT_POLICY_PATH = str(Path.home() / ".mdp2p" / "policy.json")
 
 DEFAULT_REVIEW_COUNT = 3
 DEFAULT_REVIEW_DEADLINE_DAYS = 3
@@ -475,7 +487,48 @@ class Peer:
 
     # ─── Rendering ──────────────────────────────────────────────────
 
-    # ─── Review-side helpers kept local to peer ──────────────────────
+    # ─── Reader-side scoring ─────────────────────────────────────────
+
+    async def compute_score(
+        self,
+        uri: str,
+        policy_path: Optional[str] = None,
+        trust_store_path: Optional[str] = None,
+        now: Optional[int] = None,
+    ) -> ScoreResult:
+        """Fetch attached reviews for a content and run the scorer locally.
+
+        Uses the reader's local trust store and moderation policy from
+        ``~/.mdp2p/`` by default. The scoring is local: what this peer
+        decides to show, warn on, or hide is purely its own business.
+        """
+        if self.naming_info is None:
+            raise ValueError("cannot score without a naming server configured")
+        validate_uri(uri)
+
+        resp = await naming_resolve(self.host, self.naming_info, uri)
+        if resp.get("type") != "record":
+            raise RuntimeError(
+                f"naming resolve failed for {uri}: {resp.get('msg')}"
+            )
+        author_pub_b64 = resp["record"]["public_key"]
+        content_key = compute_content_key(uri, author_pub_b64)
+
+        try:
+            att_resp = await naming_get_attachments(
+                self.host, self.naming_info, content_key
+            )
+        except Exception as e:
+            logger.warning("get_attachments failed for %s: %s", uri, e)
+            att_resp = {"type": "attachments", "records": []}
+
+        signals = _attachments_to_signals(att_resp.get("records") or [], content_key)
+
+        policy = load_policy(policy_path or DEFAULT_POLICY_PATH)
+        store = load_store(trust_store_path or DEFAULT_TRUST_STORE)
+        return _score_content_fn(signals, store, policy, now=now)
+
+    # ─── Rendering ──────────────────────────────────────────────────
 
     def render_site(self, uri: str) -> str:
         if uri not in self.sites:
@@ -498,6 +551,42 @@ class Peer:
             output.append(content.strip())
             output.append(f"└{'─' * 50}┘\n")
         return "\n".join(output)
+
+
+def _attachments_to_signals(
+    entries: list[dict],
+    expected_content_key: str,
+) -> list[Signal]:
+    """Verify and convert naming-server attachment entries into scorer Signals.
+
+    Drops entries with invalid signatures or content_key mismatches — these
+    are either corruption or a malicious server trying to inject reviews
+    under the wrong key, and should not influence the score either way.
+    """
+    signals: list[Signal] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        record = entry.get("record")
+        signature = entry.get("signature", "")
+        if not isinstance(record, dict) or not signature:
+            continue
+        ok, _ = verify_review_record(record, signature, max_drift=None)
+        if not ok:
+            continue
+        if record.get("content_key") != expected_content_key:
+            continue
+        signals.append(
+            Signal(
+                kind="review",
+                content_key=expected_content_key,
+                source_pubkey=record.get("reviewer_public_key", ""),
+                verdict=record.get("verdict", "ok"),
+                reason=record.get("comment", ""),
+                timestamp=int(record.get("timestamp", 0)),
+            )
+        )
+    return signals
 
 
 def _extract_fresh_reviewer_pool(

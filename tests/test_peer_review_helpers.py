@@ -17,18 +17,26 @@ from libp2p.utils.address_validation import find_free_port
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from bundle import public_key_to_b64
+from bundle import compute_content_key, public_key_to_b64
 from naming import (
     AssignmentStore,
     AttachmentStore,
     NameStore,
     NamingServer,
     ReviewerStore,
+    client_attach_review,
     client_list_assignments,
+    client_register,
     client_register_reviewer,
 )
-from peer.peer import Peer, _extract_fresh_reviewer_pool
-from review import build_reviewer_opt_in, sign_reviewer_opt_in
+from peer.peer import Peer, _attachments_to_signals, _extract_fresh_reviewer_pool
+from review import (
+    build_review_record,
+    build_reviewer_opt_in,
+    sign_review_record,
+    sign_reviewer_opt_in,
+)
+from trust import Policy, default_policy, save_policy
 
 
 PEER_ID = "12D3KooWExtractFreshReviewerTestPeerId1111"
@@ -93,6 +101,56 @@ class TestExtractFreshReviewerPool:
             None,
         )
         assert pool == [pub]
+
+
+# ─── _attachments_to_signals ───────────────────────────────────────────
+
+
+def _signed_review(content_key: str, verdict: str = "ok") -> tuple[dict, str, str]:
+    priv = Ed25519PrivateKey.generate()
+    pub_b64 = public_key_to_b64(priv.public_key())
+    record = build_review_record(
+        content_key=content_key,
+        reviewer_pubkey_b64=pub_b64,
+        verdict=verdict,
+        comment="",
+    )
+    signature = sign_review_record(record, priv)
+    return {"record": record, "signature": signature}, pub_b64, priv
+
+
+class TestAttachmentsToSignals:
+    def test_empty_returns_empty(self):
+        assert _attachments_to_signals([], "c1") == []
+
+    def test_valid_attachment_becomes_signal(self):
+        entry, pub, _ = _signed_review("c1", "warn")
+        signals = _attachments_to_signals([entry], "c1")
+        assert len(signals) == 1
+        s = signals[0]
+        assert s.kind == "review"
+        assert s.content_key == "c1"
+        assert s.source_pubkey == pub
+        assert s.verdict == "warn"
+
+    def test_invalid_signature_dropped(self):
+        entry, _, _ = _signed_review("c1")
+        entry["record"]["verdict"] = "reject"  # post-sign tamper
+        signals = _attachments_to_signals([entry], "c1")
+        assert signals == []
+
+    def test_mismatched_content_key_dropped(self):
+        entry, _, _ = _signed_review("c1")
+        signals = _attachments_to_signals([entry], "c2")
+        assert signals == []
+
+    def test_malformed_entries_ignored(self):
+        valid, _, _ = _signed_review("c1")
+        signals = _attachments_to_signals(
+            [None, {}, {"record": "not-a-dict"}, {"record": {}}, valid],
+            "c1",
+        )
+        assert len(signals) == 1
 
 
 # ─── Integration: _solicit_reviews against a real naming server ─────────
@@ -258,6 +316,8 @@ def test_solicit_reviews_respects_review_count_cap(tmp_path):
                 freshness_seconds=None,
             )
 
+
+
             # Collect all the inboxes; exactly 2 reviewers should have the
             # assignment, and the selection must be deterministic.
             selected_count = 0
@@ -266,5 +326,113 @@ def test_solicit_reviews_respects_review_count_cap(tmp_path):
                 if listing["records"]:
                     selected_count += 1
             assert selected_count == 2
+
+    _run(main)
+
+
+# ─── Peer.compute_score ────────────────────────────────────────────────
+
+
+async def _publish_stub_naming_record(client, server_info, uri, publisher_priv, publisher_pub):
+    """Register a minimal name record directly, without running a full publish."""
+    from bundle import build_name_record, sign_name_record
+    record = build_name_record(uri, "tester", publisher_pub, "0" * 64)
+    signature = sign_name_record(record, publisher_priv)
+    resp = await client_register(client, server_info, record, signature)
+    assert resp["type"] == "ok"
+
+
+async def _attach(client, server_info, content_key, verdict, comment=""):
+    priv = Ed25519PrivateKey.generate()
+    pub = public_key_to_b64(priv.public_key())
+    record = build_review_record(content_key, pub, verdict, comment)
+    sig = sign_review_record(record, priv)
+    resp = await client_attach_review(client, server_info, record, sig)
+    assert resp["type"] == "ok"
+    return pub
+
+
+def test_compute_score_no_attachments_returns_show(tmp_path):
+    publisher_priv = Ed25519PrivateKey.generate()
+    publisher_pub = public_key_to_b64(publisher_priv.public_key())
+    uri = "score-empty"
+
+    async def main():
+        async with solicit_env(tmp_path) as (peer, client, server_info):
+            await _publish_stub_naming_record(
+                client, server_info, uri, publisher_priv, publisher_pub
+            )
+            result = await peer.compute_score(
+                uri,
+                policy_path=str(tmp_path / "policy.json"),  # nonexistent → defaults
+                trust_store_path=str(tmp_path / "trust.json"),
+            )
+            assert result.score == 0.0
+            assert result.decision == "show"
+            assert result.breakdown == []
+
+    _run(main)
+
+
+def test_compute_score_aggregates_verified_attachments(tmp_path):
+    publisher_priv = Ed25519PrivateKey.generate()
+    publisher_pub = public_key_to_b64(publisher_priv.public_key())
+    uri = "score-agg"
+
+    # A lenient policy so even unknown reviewers contribute noticeably.
+    policy_path = tmp_path / "policy.json"
+    save_policy(
+        Policy(
+            threshold_warn=0.2,
+            threshold_hide=10.0,
+            default_weight_unknown=0.5,
+        ),
+        str(policy_path),
+    )
+
+    async def main():
+        async with solicit_env(tmp_path) as (peer, client, server_info):
+            await _publish_stub_naming_record(
+                client, server_info, uri, publisher_priv, publisher_pub
+            )
+            content_key = compute_content_key(uri, publisher_pub)
+            await _attach(client, server_info, content_key, "reject")
+
+            result = await peer.compute_score(
+                uri,
+                policy_path=str(policy_path),
+                trust_store_path=str(tmp_path / "trust.json"),
+            )
+            # 0.5 * severity("reject") = 0.5 * 3.0 = 1.5 → above warn
+            assert result.decision == "warn"
+            assert result.score == pytest.approx(1.5)
+            assert len(result.breakdown) == 1
+
+    _run(main)
+
+
+def test_compute_score_drops_forged_attachments(tmp_path):
+    """A server returning attachments under the wrong content_key must be ignored."""
+    publisher_priv = Ed25519PrivateKey.generate()
+    publisher_pub = public_key_to_b64(publisher_priv.public_key())
+    uri = "score-forged"
+
+    async def main():
+        async with solicit_env(tmp_path) as (peer, client, server_info):
+            await _publish_stub_naming_record(
+                client, server_info, uri, publisher_priv, publisher_pub
+            )
+            # Attach a review under a DIFFERENT content_key.
+            wrong_key = compute_content_key("other-uri", publisher_pub)
+            await _attach(client, server_info, wrong_key, "reject")
+
+            result = await peer.compute_score(
+                uri,
+                policy_path=str(tmp_path / "policy.json"),
+                trust_store_path=str(tmp_path / "trust.json"),
+            )
+            # The forged attachment lives under a different key, so no signal.
+            assert result.score == 0.0
+            assert result.decision == "show"
 
     _run(main)
