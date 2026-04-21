@@ -45,7 +45,7 @@ from textual.widgets import (
     Static,
 )
 
-from bundle import load_bundle
+from bundle import load_bundle, load_public_key, public_key_to_b64
 from mdp2p_client import service as svc
 from mdp2p_client.config import (
     DEFAULT_CONFIG_DIR,
@@ -57,6 +57,7 @@ from mdp2p_client.config import (
 )
 from mdp2p_client.formatting import format_size
 from mdp2p_client.scoring import score_from_cache
+from peer.reviewer_daemon import ensure_reviewer_identity
 from trust import ScoreResult
 
 
@@ -308,6 +309,86 @@ class PublishModal(ModalScreen[tuple[str, str] | None]):
         self.dismiss(None)
 
 
+# ─── Reviewer settings modal ───────────────────────────────────────────
+
+
+class ReviewerSettingsModal(ModalScreen[Optional[tuple[str, list[str]]]]):
+    """Enable/disable reviewer mode with an optional category list.
+
+    Dismisses with either ``("enable", [categories])`` or ``("disable", [])``,
+    or ``None`` on cancel. The surrounding App applies the change.
+    """
+
+    CSS = """
+    ReviewerSettingsModal { align: center middle; }
+    #dialog {
+        width: 76;
+        height: auto;
+        background: $panel;
+        border: tall $accent;
+        padding: 1 2;
+    }
+    #dialog > Label { padding: 0 1; }
+    #dialog > Input { margin-bottom: 1; }
+    #buttons { layout: horizontal; height: auto; align-horizontal: right; }
+    #buttons > Button { margin-left: 1; }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(
+        self,
+        is_enabled: bool,
+        pubkey: str,
+        categories: list[str],
+    ) -> None:
+        super().__init__()
+        self._is_enabled = is_enabled
+        self._pubkey = pubkey
+        self._categories = categories
+
+    def compose(self) -> ComposeResult:
+        state = "[b green]enabled[/]" if self._is_enabled else "[b]disabled[/]"
+        pubkey_line = (
+            f"[dim]Pubkey: {self._pubkey}[/]"
+            if self._pubkey
+            else "[dim](no identity yet — will be generated on enable)[/]"
+        )
+        with Vertical(id="dialog"):
+            yield Label("[b]Reviewer mode[/]")
+            yield Label(f"Current state: {state}")
+            yield Label(pubkey_line)
+            yield Label(
+                "\nCategories you accept (comma-separated, leave empty for any):"
+            )
+            yield Input(
+                value=", ".join(self._categories),
+                placeholder="tech, fr, science",
+                id="categories-input",
+            )
+            with Horizontal(id="buttons"):
+                yield Button("Cancel", variant="default", id="cancel")
+                if self._is_enabled:
+                    yield Button("Disable", variant="error", id="disable")
+                    yield Button("Update", variant="primary", id="enable")
+                else:
+                    yield Button("Enable", variant="primary", id="enable")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "cancel":
+            self.dismiss(None)
+            return
+        if event.button.id == "disable":
+            self.dismiss(("disable", []))
+            return
+        raw = self.query_one("#categories-input", Input).value.strip()
+        cats = [s.strip() for s in raw.split(",") if s.strip()] if raw else []
+        self.dismiss(("enable", cats))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 # ─── Reviewer inbox modal ──────────────────────────────────────────────
 
 
@@ -482,6 +563,7 @@ class Mdp2pTUI(App[None]):
         Binding("p", "publish", "Publish site"),
         Binding("r", "refresh", "Refresh"),
         Binding("i", "inbox", "Inbox"),
+        Binding("R", "reviewer_settings", "Reviewer"),
         Binding("slash", "focus_search", "Search"),
         Binding("ctrl+f", "fetch", show=False),
         Binding("ctrl+p", "publish", show=False),
@@ -691,6 +773,68 @@ class Mdp2pTUI(App[None]):
                 severity="warning",
                 timeout=10,
             )
+
+    def action_reviewer_settings(self) -> None:
+        pubkey = self._current_reviewer_pubkey() or ""
+
+        def _handle(result: tuple[str, list[str]] | None) -> None:
+            if result is None:
+                return
+            action, categories = result
+            if action == "enable":
+                self._enable_reviewer(categories)
+            else:
+                self._disable_reviewer()
+
+        self.push_screen(
+            ReviewerSettingsModal(
+                is_enabled=self.config.reviewer_mode,
+                pubkey=pubkey,
+                categories=list(self.config.reviewer_categories),
+            ),
+            callback=_handle,
+        )
+
+    def _current_reviewer_pubkey(self) -> Optional[str]:
+        pub_path = Path(self.config.reviewer_dir).expanduser() / "reviewer.pub"
+        if not pub_path.exists():
+            return None
+        try:
+            return public_key_to_b64(load_public_key(str(pub_path)))
+        except Exception:
+            return None
+
+    def _enable_reviewer(self, categories: list[str]) -> None:
+        self.config.reviewer_mode = True
+        self.config.reviewer_categories = list(categories)
+        try:
+            ensure_reviewer_identity(self.config.reviewer_dir)
+            self.config.save()
+        except Exception as e:
+            self.notify(f"reviewer enable failed: {e}", severity="error", timeout=10)
+            return
+
+        pubkey = self._current_reviewer_pubkey() or "(unknown)"
+        self.notify(
+            f"Reviewer mode enabled ✓ — pubkey {pubkey[:12]}… "
+            "Restart the seeder to apply.",
+            severity="information",
+            timeout=10,
+        )
+
+    def _disable_reviewer(self) -> None:
+        self.config.reviewer_mode = False
+        try:
+            self.config.save()
+        except Exception as e:
+            self.notify(f"reviewer disable failed: {e}", severity="error", timeout=10)
+            return
+        self.notify(
+            "Reviewer mode disabled ✓ — identity preserved. "
+            "Restart the seeder to apply.",
+            severity="information",
+            timeout=10,
+        )
 
     def action_inbox(self) -> None:
         if not self.config.reviewer_mode:
