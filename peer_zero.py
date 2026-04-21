@@ -27,7 +27,7 @@ from pathlib import Path
 import trio
 
 from mdp2p_logging import silence_libp2p_noise
-from naming import NameStore, NamingServer
+from naming import NameStore, NamingServer, ReviewerStore
 from peer import run_peer
 
 DEFAULT_PORT = 1707
@@ -38,6 +38,7 @@ async def serve(port: int, data_dir: str, listen_host: str) -> None:
     data_path = Path(data_dir)
     data_path.mkdir(parents=True, exist_ok=True)
     naming_store_path = data_path / "naming_records.json"
+    reviewer_store_path = data_path / "reviewers.json"
     peer_key_path = data_path / "peer.key"
 
     async with run_peer(
@@ -51,7 +52,8 @@ async def serve(port: int, data_dir: str, listen_host: str) -> None:
         # Attach the naming server to the same host so both protocols
         # live behind a single multiaddr / peer-id.
         store = NameStore(str(naming_store_path))
-        naming_server = NamingServer(peer.host, store)
+        reviewer_store = ReviewerStore(str(reviewer_store_path))
+        naming_server = NamingServer(peer.host, store, reviewer_store)
         naming_server.attach()
 
         peer_id = peer.host.get_id().to_string()
@@ -61,6 +63,10 @@ async def serve(port: int, data_dir: str, listen_host: str) -> None:
         print(f"  Port     : {port}")
         print(f"  PeerID   : {peer_id}")
         print(f"  Store    : {naming_store_path} ({len(store.list_records())} records)")
+        print(
+            f"  Reviewers: {reviewer_store_path} "
+            f"({len(reviewer_store.list_records())} registered)"
+        )
         for addr in peer.addrs:
             print(f"  Listen   : {addr}")
         print(f"  Bootstrap: /dns4/<your-host>/tcp/{port}/p2p/{peer_id}")

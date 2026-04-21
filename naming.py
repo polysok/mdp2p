@@ -9,9 +9,11 @@ never fabricates records — it only stores and serves records it could verify,
 so it is non-trusted: clients re-verify signatures upon resolve.
 
 Wire protocol: /mdp2p/naming/1.0.0
-  register : {"type": "register", "record": {...}, "signature": "<b64>"}
-  resolve  : {"type": "resolve",  "uri": "<uri>"}
-  list     : {"type": "list"}
+  register          : {"type": "register", "record": {...}, "signature": "<b64>"}
+  resolve           : {"type": "resolve",  "uri": "<uri>"}
+  list              : {"type": "list"}
+  register_reviewer : {"type": "register_reviewer", "record": {...}, "signature": "<b64>"}
+  list_reviewers    : {"type": "list_reviewers"}
 
 Every message on a stream is length-prefixed: [4 bytes big-endian length][JSON].
 """
@@ -37,6 +39,7 @@ from libp2p.network.stream.net_stream import INetStream
 from libp2p.peer.peerinfo import PeerInfo
 
 from bundle import validate_uri, verify_name_record
+from review import verify_reviewer_opt_in
 from wire import recv_framed_json, send_framed_json
 
 logger = logging.getLogger("mdp2p.naming")
@@ -45,6 +48,7 @@ NAMING_PROTOCOL = TProtocol("/mdp2p/naming/1.0.0")
 MAX_MSG_SIZE = 1 * 1024 * 1024  # 1 MiB is ample for any name record
 DEFAULT_PORT = 1707
 DEFAULT_STORE_PATH = "./naming_data/records.json"
+DEFAULT_REVIEWERS_PATH = "./naming_data/reviewers.json"
 DEFAULT_KEY_PATH = "./naming_data/peer.key"
 
 
@@ -115,12 +119,83 @@ class NameStore:
         return True, ""
 
 
+# ─── Reviewer store ───────────────────────────────────────────────────
+
+class ReviewerStore:
+    """Opt-in reviewer registrations, keyed by the reviewer's public key.
+
+    Structurally identical to NameStore but holds reviewer opt-in records
+    signed by each reviewer. Persisted to a separate JSON file so deploys
+    that enable/disable reviewers can be reasoned about independently.
+    """
+
+    def __init__(self, path: str):
+        self.path = Path(path)
+        self._records: dict[str, tuple[dict, str]] = {}
+        self._load()
+
+    def _load(self) -> None:
+        if not self.path.exists():
+            return
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+            self._records = {
+                pubkey: (entry["record"], entry["signature"])
+                for pubkey, entry in raw.items()
+            }
+            logger.info("Loaded %d reviewer records from %s", len(self._records), self.path)
+        except Exception as e:
+            logger.error("Failed to load reviewer records: %s", e)
+
+    def _save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        serialized = {
+            pubkey: {"record": record, "signature": signature}
+            for pubkey, (record, signature) in self._records.items()
+        }
+        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        tmp.write_text(
+            json.dumps(serialized, indent=2, sort_keys=True), encoding="utf-8"
+        )
+        tmp.replace(self.path)
+
+    def get(self, pubkey: str) -> Optional[tuple[dict, str]]:
+        return self._records.get(pubkey)
+
+    def list_records(self) -> list[tuple[dict, str]]:
+        return list(self._records.values())
+
+    def set(self, record: dict, signature: str) -> tuple[bool, str]:
+        pubkey = record.get("public_key", "")
+        if not pubkey:
+            return False, "record missing public_key"
+        existing = self._records.get(pubkey)
+        if existing is not None:
+            existing_record, _ = existing
+            existing_ts = int(existing_record.get("timestamp", 0))
+            new_ts = int(record.get("timestamp", 0))
+            if new_ts <= existing_ts:
+                return False, (
+                    f"timestamp must be strictly greater than existing "
+                    f"({new_ts} <= {existing_ts})"
+                )
+        self._records[pubkey] = (record, signature)
+        self._save()
+        return True, ""
+
+
 # ─── Server ───────────────────────────────────────────────────────────
 
 class NamingServer:
-    def __init__(self, host: IHost, store: NameStore):
+    def __init__(
+        self,
+        host: IHost,
+        store: NameStore,
+        reviewer_store: Optional[ReviewerStore] = None,
+    ):
         self.host = host
         self.store = store
+        self.reviewer_store = reviewer_store
 
     def attach(self) -> None:
         self.host.set_stream_handler(NAMING_PROTOCOL, self._handle_stream)
@@ -139,6 +214,10 @@ class NamingServer:
                 response = self._handle_resolve(msg)
             elif msg_type == "list":
                 response = self._handle_list()
+            elif msg_type == "register_reviewer":
+                response = self._handle_register_reviewer(msg)
+            elif msg_type == "list_reviewers":
+                response = self._handle_list_reviewers()
             else:
                 response = {"type": "error", "msg": f"unknown type: {msg_type}"}
 
@@ -195,6 +274,41 @@ class NamingServer:
     def _handle_list(self) -> dict:
         return {"type": "names", "records": self.store.list_records()}
 
+    def _handle_register_reviewer(self, msg: dict) -> dict:
+        if self.reviewer_store is None:
+            return {"type": "error", "msg": "reviewer registry disabled on this server"}
+
+        record = msg.get("record") or {}
+        signature = msg.get("signature", "")
+        if not record or not signature:
+            return {"type": "error", "msg": "record and signature required"}
+
+        is_valid, err = verify_reviewer_opt_in(record, signature)
+        if not is_valid:
+            return {"type": "error", "msg": f"invalid signature: {err}"}
+
+        ok, err = self.reviewer_store.set(record, signature)
+        if not ok:
+            return {"type": "error", "msg": err}
+
+        logger.info(
+            "REGISTER_REVIEWER pubkey=%s cats=%s ts=%s",
+            record.get("public_key", "")[:12],
+            record.get("categories"),
+            record.get("timestamp"),
+        )
+        return {"type": "ok", "public_key": record.get("public_key")}
+
+    def _handle_list_reviewers(self) -> dict:
+        if self.reviewer_store is None:
+            return {"type": "reviewers", "records": []}
+        # Return record + signature pairs so clients can re-verify.
+        entries = [
+            {"record": record, "signature": signature}
+            for record, signature in self.reviewer_store.list_records()
+        ]
+        return {"type": "reviewers", "records": entries}
+
 
 async def _send_error(stream: INetStream, message: str) -> None:
     try:
@@ -236,6 +350,20 @@ async def client_list(host: IHost, server_info: PeerInfo) -> dict:
     return await _rpc(host, server_info, {"type": "list"})
 
 
+async def client_register_reviewer(
+    host: IHost, server_info: PeerInfo, record: dict, signature: str
+) -> dict:
+    return await _rpc(
+        host,
+        server_info,
+        {"type": "register_reviewer", "record": record, "signature": signature},
+    )
+
+
+async def client_list_reviewers(host: IHost, server_info: PeerInfo) -> dict:
+    return await _rpc(host, server_info, {"type": "list_reviewers"})
+
+
 # ─── Peer key persistence ─────────────────────────────────────────────
 
 def load_or_create_peer_seed(path: str) -> bytes:
@@ -257,13 +385,16 @@ def load_or_create_peer_seed(path: str) -> bytes:
 
 # ─── CLI ──────────────────────────────────────────────────────────────
 
-async def serve(port: int, store_path: str, key_path: str) -> None:
+async def serve(
+    port: int, store_path: str, reviewers_path: str, key_path: str
+) -> None:
     seed = load_or_create_peer_seed(key_path)
     host = new_host(key_pair=create_new_key_pair(seed))
 
     listen = multiaddr.Multiaddr(f"/ip4/0.0.0.0/tcp/{port}")
     store = NameStore(store_path)
-    server = NamingServer(host, store)
+    reviewer_store = ReviewerStore(reviewers_path)
+    server = NamingServer(host, store, reviewer_store)
 
     async with host.run(listen_addrs=[listen]), trio.open_nursery() as nursery:
         nursery.start_soon(host.get_peerstore().start_cleanup_task, 60)
@@ -275,6 +406,10 @@ async def serve(port: int, store_path: str, key_path: str) -> None:
         print(f"  Port       : {port}")
         print(f"  PeerID     : {peer_id}")
         print(f"  Store      : {store_path} ({len(store.list_records())} records)")
+        print(
+            f"  Reviewers  : {reviewers_path} "
+            f"({len(reviewer_store.list_records())} registered)"
+        )
         for addr in host.get_addrs():
             print(f"  Listen     : {addr}")
         print(f"  Bootstrap  : /ip4/<host>/tcp/{port}/p2p/{peer_id}")
@@ -287,6 +422,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="MDP2P naming server")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--store", default=DEFAULT_STORE_PATH)
+    parser.add_argument("--reviewers", default=DEFAULT_REVIEWERS_PATH)
     parser.add_argument("--key", default=DEFAULT_KEY_PATH)
     args = parser.parse_args()
 
@@ -297,7 +433,7 @@ def main() -> None:
     )
 
     try:
-        trio.run(serve, args.port, args.store, args.key)
+        trio.run(serve, args.port, args.store, args.reviewers, args.key)
     except KeyboardInterrupt:
         print("\n[NAMING] stopped")
         sys.exit(0)
