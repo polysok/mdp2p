@@ -150,6 +150,8 @@ def cli_setup(
     author: str,
     naming: Optional[str] = None,
     language: Optional[str] = None,
+    reviewer: Optional[bool] = None,
+    reviewer_categories: Optional[list[str]] = None,
 ) -> int:
     """CLI: Setup configuration."""
     if config is None:
@@ -163,16 +165,32 @@ def cli_setup(
     if language and language in SUPPORTED_LANGUAGES:
         config.language = language
 
+    if reviewer is not None:
+        config.reviewer_mode = reviewer
+    if reviewer_categories is not None:
+        config.reviewer_categories = list(reviewer_categories)
+
     load_language(config.language)
 
     for attempt in range(2):
         try:
             config = ensure_config(config)
+            if config.reviewer_mode:
+                _ensure_reviewer_identity_quietly(config)
             config.save()
             print(f"\n  {c.GREEN}{c.BOLD}{t('config_saved')}{c.RESET}")
             print(f"  {c.BOLD}{t('config_author')}{c.RESET}   : {c.CYAN}{config.author}{c.RESET}")
             print(f"  {c.BOLD}{t('config_naming')}{c.RESET}  : {config.naming_multiaddr or '—'}")
             print(f"  {c.BOLD}{t('config_language')}{c.RESET}  : {config.language}")
+            print(
+                f"  {c.BOLD}Reviewer{c.RESET}  : "
+                f"{_fmt_bool(config.reviewer_mode)}"
+                + (
+                    f" {c.DIM}({', '.join(config.reviewer_categories)}){c.RESET}"
+                    if config.reviewer_categories
+                    else ""
+                )
+            )
             return 0
         except PermissionError as e:
             if attempt == 0 and fix_permissions(e):
@@ -181,6 +199,113 @@ def cli_setup(
             return 1
 
     return 1
+
+
+# ─── Reviewer management ───────────────────────────────────────────────
+
+
+def _ensure_reviewer_identity_quietly(config: ClientConfig) -> str:
+    """Create the reviewer keypair if needed; return the base64 public key."""
+    from peer.reviewer_daemon import ensure_reviewer_identity
+    _priv, pub_b64 = ensure_reviewer_identity(config.reviewer_dir)
+    return pub_b64
+
+
+def _load_reviewer_pubkey(config: ClientConfig) -> Optional[str]:
+    """Return the reviewer public key if one is already on disk, else None."""
+    from bundle import load_public_key, public_key_to_b64
+    pub_path = Path(config.reviewer_dir).expanduser() / "reviewer.pub"
+    if not pub_path.exists():
+        return None
+    try:
+        return public_key_to_b64(load_public_key(str(pub_path)))
+    except Exception:
+        return None
+
+
+def _print_restart_hint() -> None:
+    print(f"  {c.DIM}restart the seeder to apply the change:{c.RESET}")
+    print(f"    {c.CYAN}mdp2p serve{c.RESET}")
+    print(f"  {c.DIM}or, if you use the auto-seeder service, "
+          f"reinstall it:{c.RESET}")
+    print(f"    {c.CYAN}mdp2p service uninstall && mdp2p service install{c.RESET}")
+
+
+def cli_reviewer_enable(
+    config: ClientConfig,
+    categories: Optional[list[str]] = None,
+) -> int:
+    """Enable reviewer mode + generate the reviewer identity if missing."""
+    was_enabled = config.reviewer_mode
+    config.reviewer_mode = True
+    if categories is not None:
+        config.reviewer_categories = list(categories)
+
+    try:
+        pub_b64 = _ensure_reviewer_identity_quietly(config)
+        config.save()
+    except PermissionError as e:
+        print(f"\n  {c.RED}permission error: {e}{c.RESET}")
+        return 1
+    except Exception as e:
+        print(f"\n  {c.RED}could not enable reviewer mode: {e}{c.RESET}")
+        return 1
+
+    status = "already" if was_enabled else "now"
+    print(f"\n  {c.GREEN}{c.BOLD}Reviewer mode is {status} enabled ✓{c.RESET}\n")
+    print(f"  {c.BOLD}Pubkey{c.RESET}     : {c.DIM}{pub_b64}{c.RESET}")
+    print(
+        f"  {c.BOLD}Categories{c.RESET} : "
+        f"{', '.join(config.reviewer_categories) if config.reviewer_categories else '(any)'}"
+    )
+    print(f"  {c.BOLD}Directory{c.RESET}  : {c.DIM}{config.reviewer_dir}{c.RESET}")
+    print()
+    _print_restart_hint()
+    return 0
+
+
+def cli_reviewer_disable(config: ClientConfig) -> int:
+    """Turn reviewer mode off in config. The identity on disk is preserved."""
+    if not config.reviewer_mode:
+        print(f"  {c.DIM}reviewer mode is already disabled{c.RESET}")
+        return 0
+
+    config.reviewer_mode = False
+    try:
+        config.save()
+    except Exception as e:
+        print(f"\n  {c.RED}could not save config: {e}{c.RESET}")
+        return 1
+
+    print(f"\n  {c.GREEN}Reviewer mode disabled ✓{c.RESET}")
+    print(
+        f"  {c.DIM}your reviewer identity is preserved under "
+        f"{config.reviewer_dir} — enable again to reuse the same pubkey.{c.RESET}"
+    )
+    print()
+    _print_restart_hint()
+    return 0
+
+
+def cli_reviewer_status(config: ClientConfig) -> int:
+    """Show the current reviewer configuration and identity, offline."""
+    pub_b64 = _load_reviewer_pubkey(config)
+
+    print(f"\n  {c.BOLD}{c.CYAN}── Reviewer ──{c.RESET}\n")
+    print(f"  {c.BOLD}{'Enabled':<11}{c.RESET} : {_fmt_bool(config.reviewer_mode)}")
+    if pub_b64:
+        print(f"  {c.BOLD}{'Pubkey':<11}{c.RESET} : {c.DIM}{pub_b64}{c.RESET}")
+    else:
+        print(
+            f"  {c.BOLD}{'Pubkey':<11}{c.RESET} : {c.DIM}(no identity yet — "
+            f"run `mdp2p reviewer enable`){c.RESET}"
+        )
+    print(
+        f"  {c.BOLD}{'Categories':<11}{c.RESET} : "
+        f"{', '.join(config.reviewer_categories) if config.reviewer_categories else '(any)'}"
+    )
+    print(f"  {c.BOLD}{'Directory':<11}{c.RESET} : {c.DIM}{config.reviewer_dir}{c.RESET}")
+    return 0
 
 
 async def cli_inbox(config: ClientConfig, as_json: bool = False) -> int:

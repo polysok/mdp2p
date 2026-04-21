@@ -25,6 +25,9 @@ from .commands import (
     cli_publish,
     cli_remove,
     cli_review,
+    cli_reviewer_disable,
+    cli_reviewer_enable,
+    cli_reviewer_status,
     cli_serve,
     cli_service,
     cli_setup,
@@ -71,6 +74,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Naming server multiaddr (e.g., /ip4/1.2.3.4/tcp/1707/p2p/12D3Koo...)",
     )
     setup_parser.add_argument("--language", help="Language (fr/en/zh/ar/hi)")
+    setup_parser.add_argument(
+        "--reviewer",
+        action="store_true",
+        help="Opt in to reviewing content on the network",
+    )
+    setup_parser.add_argument(
+        "--reviewer-categories",
+        help="Comma-separated categories you accept to review (e.g., tech,fr)",
+    )
 
     subparsers.add_parser("browse", help="List all sites registered on the naming server")
     subparsers.add_parser("pins", help="List pinned public keys (TOFU)")
@@ -109,6 +121,19 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     review_parser.add_argument("--comment", default="")
 
+    reviewer_parser = subparsers.add_parser(
+        "reviewer", help="Manage reviewer mode (enable/disable/status)"
+    )
+    reviewer_parser.add_argument(
+        "action",
+        choices=["enable", "disable", "status"],
+        help="What to do",
+    )
+    reviewer_parser.add_argument(
+        "--categories",
+        help="Comma-separated categories (enable only, e.g., tech,fr)",
+    )
+
     return parser
 
 
@@ -126,7 +151,17 @@ async def main() -> int:
 
     # Commands that do not require a loaded config.
     if args.command == "setup":
-        return cli_setup(config, args.author, args.naming, args.language)
+        cats = None
+        if getattr(args, "reviewer_categories", None):
+            cats = [s.strip() for s in args.reviewer_categories.split(",") if s.strip()]
+        return cli_setup(
+            config,
+            args.author,
+            args.naming,
+            args.language,
+            reviewer=(args.reviewer if args.reviewer else None),
+            reviewer_categories=cats,
+        )
     if args.command == "pins":
         cli_pins()
         return 0
@@ -178,6 +213,16 @@ async def main() -> int:
         return await cli_review(
             config, args.content_key, args.verdict, args.comment
         )
+    if args.command == "reviewer":
+        if args.action == "enable":
+            cats = None
+            if args.categories:
+                cats = [s.strip() for s in args.categories.split(",") if s.strip()]
+            return cli_reviewer_enable(config, categories=cats)
+        if args.action == "disable":
+            return cli_reviewer_disable(config)
+        if args.action == "status":
+            return cli_reviewer_status(config)
 
     parser.print_help()
     return 0
