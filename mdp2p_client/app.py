@@ -20,6 +20,7 @@ from .commands import (
     cli_browse,
     cli_fetch,
     cli_inbox,
+    cli_language,
     cli_list,
     cli_pins,
     cli_publish,
@@ -139,6 +140,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Comma-separated categories (enable only, e.g., tech,fr)",
     )
 
+    language_parser = subparsers.add_parser(
+        "language", help="Change the UI language"
+    )
+    language_parser.add_argument(
+        "code",
+        choices=["fr", "en", "zh", "ar", "hi"],
+        help="Language code",
+    )
+
     return parser
 
 
@@ -231,6 +241,8 @@ async def main() -> int:
             return cli_reviewer_disable(config)
         if args.action == "status":
             return cli_reviewer_status(config)
+    if args.command == "language":
+        return cli_language(config, args.code)
 
     parser.print_help()
     return 0

@@ -91,6 +91,7 @@
   "tui_bind_inbox": "Inbox",
   "tui_bind_reviewer": "Reviewer",
   "tui_bind_search": "Search",
+  "tui_bind_language": "Language",
   "tui_filter_placeholder": "🔍  Filter…",
 
   "tui_welcome_title": "Welcome, **{author}**",
@@ -111,6 +112,7 @@
   "tui_modal_reviewer_title": "Reviewer mode",
   "tui_modal_inbox_title": "Inbox — {count} review(s) pending",
   "tui_modal_autoseed_title": "Keep your sites online?",
+  "tui_modal_language_title": "Choose language",
 
   "tui_label_uri_publish": "URI (e.g. blog):",
   "tui_label_uri_fetch": "URI (e.g. blog.alice):",
@@ -160,5 +162,6 @@
   "tui_notify_reviewer_enabled": "Reviewer mode enabled ✓ — pubkey {pubkey}… Restart the seeder to apply.",
   "tui_notify_reviewer_disabled": "Reviewer mode disabled ✓ — identity preserved. Restart the seeder to apply.",
   "tui_notify_autoseed_installing": "Installing auto-seeder service…",
-  "tui_notify_autoseed_enabled": "Auto-seeder enabled ✓"
+  "tui_notify_autoseed_enabled": "Auto-seeder enabled ✓",
+  "tui_notify_language_changed": "Language switched ✓ — menus update immediately; footer shortcuts refresh on next startup."
 }

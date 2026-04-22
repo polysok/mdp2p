@@ -91,6 +91,7 @@
   "tui_bind_inbox": "收件箱",
   "tui_bind_reviewer": "审阅者",
   "tui_bind_search": "搜索",
+  "tui_bind_language": "语言",
   "tui_filter_placeholder": "🔍  筛选…",
 
   "tui_welcome_title": "欢迎,**{author}**",
@@ -111,6 +112,7 @@
   "tui_modal_reviewer_title": "审阅者模式",
   "tui_modal_inbox_title": "收件箱 — {count} 个待审阅",
   "tui_modal_autoseed_title": "保持你的站点在线?",
+  "tui_modal_language_title": "选择语言",
 
   "tui_label_uri_publish": "URI (例如 blog):",
   "tui_label_uri_fetch": "URI (例如 blog.alice):",
@@ -160,5 +162,6 @@
   "tui_notify_reviewer_enabled": "审阅者模式已启用 ✓ — 公钥 {pubkey}… 重启 seeder 以应用。",
   "tui_notify_reviewer_disabled": "审阅者模式已禁用 ✓ — 身份已保留。重启 seeder 以应用。",
   "tui_notify_autoseed_installing": "正在安装 auto-seeder 服务…",
-  "tui_notify_autoseed_enabled": "Auto-seeder 已启用 ✓"
+  "tui_notify_autoseed_enabled": "Auto-seeder 已启用 ✓",
+  "tui_notify_language_changed": "语言已切换 ✓ — 菜单立即更新;页脚快捷键将在下次启动时刷新。"
 }

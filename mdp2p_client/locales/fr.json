@@ -91,6 +91,7 @@
   "tui_bind_inbox": "Inbox",
   "tui_bind_reviewer": "Reviewer",
   "tui_bind_search": "Rechercher",
+  "tui_bind_language": "Langue",
   "tui_filter_placeholder": "🔍  Filtrer…",
 
   "tui_welcome_title": "Bienvenue, **{author}**",
@@ -111,6 +112,7 @@
   "tui_modal_reviewer_title": "Mode reviewer",
   "tui_modal_inbox_title": "Inbox — {count} review(s) en attente",
   "tui_modal_autoseed_title": "Garder tes sites en ligne ?",
+  "tui_modal_language_title": "Choisir la langue",
 
   "tui_label_uri_publish": "URI (ex. blog) :",
   "tui_label_uri_fetch": "URI (ex. blog.alice) :",
@@ -160,5 +162,6 @@
   "tui_notify_reviewer_enabled": "Mode reviewer activé ✓ — clé {pubkey}… Relance le seeder pour appliquer.",
   "tui_notify_reviewer_disabled": "Mode reviewer désactivé ✓ — identité conservée. Relance le seeder pour appliquer.",
   "tui_notify_autoseed_installing": "Installation de l'auto-seeder…",
-  "tui_notify_autoseed_enabled": "Auto-seeder activé ✓"
+  "tui_notify_autoseed_enabled": "Auto-seeder activé ✓",
+  "tui_notify_language_changed": "Langue changée ✓ — les menus suivent déjà la nouvelle ; les raccourcis du pied de page se mettent à jour au prochain démarrage."
 }

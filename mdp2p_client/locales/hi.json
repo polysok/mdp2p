@@ -91,6 +91,7 @@
   "tui_bind_inbox": "इनबॉक्स",
   "tui_bind_reviewer": "समीक्षक",
   "tui_bind_search": "खोजें",
+  "tui_bind_language": "भाषा",
   "tui_filter_placeholder": "🔍  फ़िल्टर…",
 
   "tui_welcome_title": "स्वागत है, **{author}**",
@@ -111,6 +112,7 @@
   "tui_modal_reviewer_title": "समीक्षक मोड",
   "tui_modal_inbox_title": "इनबॉक्स — {count} समीक्षा(एँ) लंबित",
   "tui_modal_autoseed_title": "अपनी साइटों को ऑनलाइन रखें?",
+  "tui_modal_language_title": "भाषा चुनें",
 
   "tui_label_uri_publish": "URI (उदा. blog):",
   "tui_label_uri_fetch": "URI (उदा. blog.alice):",
@@ -160,5 +162,6 @@
   "tui_notify_reviewer_enabled": "समीक्षक मोड सक्षम ✓ — कुंजी {pubkey}… लागू करने के लिए seeder को पुनः आरंभ करें।",
   "tui_notify_reviewer_disabled": "समीक्षक मोड अक्षम ✓ — पहचान संरक्षित। लागू करने के लिए seeder को पुनः आरंभ करें।",
   "tui_notify_autoseed_installing": "auto-seeder सेवा स्थापित की जा रही है…",
-  "tui_notify_autoseed_enabled": "Auto-seeder सक्षम ✓"
+  "tui_notify_autoseed_enabled": "Auto-seeder सक्षम ✓",
+  "tui_notify_language_changed": "भाषा बदली ✓ — मेनू तुरंत अपडेट होंगे; फुटर शॉर्टकट अगले स्टार्टअप पर रिफ़्रेश होंगे।"
 }

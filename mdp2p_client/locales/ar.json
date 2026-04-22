@@ -91,6 +91,7 @@
   "tui_bind_inbox": "البريد الوارد",
   "tui_bind_reviewer": "المراجع",
   "tui_bind_search": "بحث",
+  "tui_bind_language": "اللغة",
   "tui_filter_placeholder": "🔍  تصفية…",
 
   "tui_welcome_title": "مرحبًا، **{author}**",
@@ -111,6 +112,7 @@
   "tui_modal_reviewer_title": "وضع المراجع",
   "tui_modal_inbox_title": "البريد الوارد — {count} مراجعة معلقة",
   "tui_modal_autoseed_title": "إبقاء مواقعك متصلة؟",
+  "tui_modal_language_title": "اختيار اللغة",
 
   "tui_label_uri_publish": "URI (مثال blog):",
   "tui_label_uri_fetch": "URI (مثال blog.alice):",
@@ -160,5 +162,6 @@
   "tui_notify_reviewer_enabled": "تم تفعيل وضع المراجع ✓ — المفتاح {pubkey}… أعد تشغيل seeder للتطبيق.",
   "tui_notify_reviewer_disabled": "تم تعطيل وضع المراجع ✓ — تم الحفاظ على الهوية. أعد تشغيل seeder للتطبيق.",
   "tui_notify_autoseed_installing": "جاري تثبيت خدمة auto-seeder…",
-  "tui_notify_autoseed_enabled": "تم تفعيل auto-seeder ✓"
+  "tui_notify_autoseed_enabled": "تم تفعيل auto-seeder ✓",
+  "tui_notify_language_changed": "تم تغيير اللغة ✓ — تُحدَّث القوائم فورًا؛ تُحدَّث اختصارات الشريط السفلي عند إعادة التشغيل."
 }

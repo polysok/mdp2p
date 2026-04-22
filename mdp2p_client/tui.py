@@ -42,6 +42,8 @@ from textual.widgets import (
     ListItem,
     ListView,
     Markdown,
+    RadioButton,
+    RadioSet,
     SelectionList,
     Static,
 )
@@ -349,6 +351,73 @@ class PublishModal(ModalScreen[tuple[str, str, list[str]] | None]):
         self.dismiss(None)
 
 
+# ─── Language picker modal ─────────────────────────────────────────────
+
+
+# Native names so each option is legible regardless of which language
+# the user currently sees the TUI in.
+LANGUAGE_CHOICES: list[tuple[str, str]] = [
+    ("fr", "Français"),
+    ("en", "English"),
+    ("zh", "中文"),
+    ("ar", "العربية"),
+    ("hi", "हिन्दी"),
+]
+
+
+class LanguageModal(ModalScreen[Optional[str]]):
+    """Pick the UI language. Dismisses with the chosen code or None."""
+
+    CSS = """
+    LanguageModal { align: center middle; }
+    #dialog {
+        width: 52;
+        height: auto;
+        background: $panel;
+        border: tall $primary;
+        padding: 1 2;
+    }
+    #dialog > Label { padding: 0 1; }
+    #lang-set { margin: 1 0; }
+    #buttons { layout: horizontal; height: auto; align-horizontal: right; }
+    #buttons > Button { margin-left: 1; }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, current: str) -> None:
+        super().__init__()
+        self._current = current
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Label(f"[b]{t('tui_modal_language_title')}[/]")
+            with RadioSet(id="lang-set"):
+                for code, native in LANGUAGE_CHOICES:
+                    yield RadioButton(
+                        native,
+                        value=(code == self._current),
+                        id=f"lang-{code}",
+                    )
+            with Horizontal(id="buttons"):
+                yield Button(t("tui_btn_cancel"), variant="default", id="cancel")
+                yield Button(t("tui_btn_ok"), variant="primary", id="ok")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "cancel":
+            self.dismiss(None)
+            return
+        radio_set = self.query_one("#lang-set", RadioSet)
+        pressed = radio_set.pressed_button
+        if pressed is None or not pressed.id:
+            self.dismiss(None)
+            return
+        self.dismiss(pressed.id.removeprefix("lang-"))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 # ─── Reviewer settings modal ───────────────────────────────────────────
 
 
@@ -612,6 +681,7 @@ class Mdp2pTUI(App[None]):
         Binding("r", "refresh", t("tui_bind_refresh")),
         Binding("i", "inbox", t("tui_bind_inbox")),
         Binding("R", "reviewer_settings", t("tui_bind_reviewer")),
+        Binding("l", "language", t("tui_bind_language")),
         Binding("slash", "focus_search", t("tui_bind_search")),
         Binding("ctrl+f", "fetch", show=False),
         Binding("ctrl+p", "publish", show=False),
@@ -822,6 +892,25 @@ class Mdp2pTUI(App[None]):
                 severity="warning",
                 timeout=10,
             )
+
+    def action_language(self) -> None:
+        def _handle(code: str | None) -> None:
+            if code is None or code == self.config.language:
+                return
+            self.config.language = code
+            try:
+                self.config.save()
+            except Exception as e:
+                self.notify(f"language save failed: {e}", severity="error", timeout=10)
+                return
+            load_language(code)
+            self.notify(
+                t("tui_notify_language_changed"),
+                severity="information",
+                timeout=10,
+            )
+
+        self.push_screen(LanguageModal(current=self.config.language), callback=_handle)
 
     def action_reviewer_settings(self) -> None:
         pubkey = self._current_reviewer_pubkey() or ""

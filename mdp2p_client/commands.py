@@ -319,6 +319,30 @@ def cli_reviewer_disable(config: ClientConfig) -> int:
     return 0
 
 
+def cli_language(config: ClientConfig, code: str) -> int:
+    """Set the UI language. Only updates config — no other field is required."""
+    if code not in SUPPORTED_LANGUAGES:
+        print(
+            f"  {c.RED}unknown language '{code}'. "
+            f"Supported: {', '.join(SUPPORTED_LANGUAGES)}{c.RESET}"
+        )
+        return 1
+
+    config.language = code
+    load_language(code)
+
+    try:
+        config.save()
+    except Exception as e:
+        print(f"  {c.RED}could not save config: {e}{c.RESET}")
+        return 1
+
+    print(f"\n  {c.GREEN}{c.BOLD}{t('config_saved')}{c.RESET}")
+    print(f"  {c.BOLD}{t('config_language')}{c.RESET}  : {code}")
+    print(f"  {c.DIM}(restart the TUI if it is currently open){c.RESET}")
+    return 0
+
+
 def cli_reviewer_status(config: ClientConfig) -> int:
     """Show the current reviewer configuration and identity, offline."""
     pub_b64 = _load_reviewer_pubkey(config)
