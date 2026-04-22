@@ -58,6 +58,7 @@ from mdp2p_client.config import (
     load_or_create_config,
 )
 from mdp2p_client.formatting import format_size
+from mdp2p_client.i18n import load_language, t
 from mdp2p_client.scoring import score_from_cache
 from peer.reviewer_daemon import ensure_reviewer_identity
 from review import labeled_categories
@@ -75,6 +76,17 @@ DECISION_BADGE = {
     "warn": "⚠",
     "hide": "⛔",
 }
+
+
+# BINDINGS is evaluated at class-definition time, so the footer labels
+# need the user's language to be loaded *before* this module is imported.
+# app.py's main() guarantees that ordering. For direct invocations we
+# attempt a best-effort load here so the first render is already correct.
+try:
+    _early_cfg = load_or_create_config()
+    load_language(_early_cfg.language)
+except Exception:
+    pass
 
 VERDICT_LABEL = {
     "ok": "[green]ok[/]",
@@ -221,18 +233,20 @@ class FetchModal(ModalScreen[tuple[str, str] | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
-            yield Label("[b]Fetch a new site[/]")
-            yield Label("URI (e.g. blog.alice):")
-            yield Input(placeholder="blog.alice", id="uri-input")
-            yield Label("Naming server multiaddr:")
+            yield Label(f"[b]{t('tui_modal_fetch_title')}[/]")
+            yield Label(t("tui_label_uri_fetch"))
+            yield Input(
+                placeholder=t("tui_label_uri_placeholder_fetch"), id="uri-input"
+            )
+            yield Label(t("tui_label_naming"))
             yield Input(
                 value=self._default_naming,
-                placeholder="/dns4/relay.mdp2p.net/tcp/1707/p2p/…",
+                placeholder=t("tui_label_naming_placeholder"),
                 id="naming-input",
             )
             with Horizontal(id="buttons"):
-                yield Button("Cancel", variant="default", id="cancel")
-                yield Button("Fetch", variant="primary", id="ok")
+                yield Button(t("tui_btn_cancel"), variant="default", id="cancel")
+                yield Button(t("tui_btn_fetch"), variant="primary", id="ok")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "ok":
@@ -247,7 +261,9 @@ class FetchModal(ModalScreen[tuple[str, str] | None]):
         uri = self.query_one("#uri-input", Input).value.strip()
         naming = self.query_one("#naming-input", Input).value.strip()
         if not uri or not naming:
-            self.app.notify("URI and naming multiaddr are required", severity="warning")
+            self.app.notify(
+                t("tui_notify_uri_and_naming_required"), severity="warning"
+            )
             return
         self.dismiss((uri, naming))
 
@@ -287,15 +303,17 @@ class PublishModal(ModalScreen[tuple[str, str, list[str]] | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
-            yield Label("[b]Publish a new site[/]")
-            yield Label("URI (e.g. blog):")
-            yield Input(placeholder="blog", id="uri-input")
-            yield Label("Path to folder containing .md files:")
+            yield Label(f"[b]{t('tui_modal_publish_title')}[/]")
+            yield Label(t("tui_label_uri_publish"))
             yield Input(
-                placeholder="~/Documents/my_site",
+                placeholder=t("tui_label_uri_placeholder"), id="uri-input"
+            )
+            yield Label(t("tui_label_site_path"))
+            yield Input(
+                placeholder=t("tui_label_site_path_placeholder"),
                 id="site-input",
             )
-            yield Label("Categories (space or click to toggle, any number):")
+            yield Label(t("tui_label_publish_categories"))
             yield SelectionList[str](
                 *[
                     Selection(lbl, slug)
@@ -304,8 +322,8 @@ class PublishModal(ModalScreen[tuple[str, str, list[str]] | None]):
                 id="categories-list",
             )
             with Horizontal(id="buttons"):
-                yield Button("Cancel", variant="default", id="cancel")
-                yield Button("Publish", variant="primary", id="ok")
+                yield Button(t("tui_btn_cancel"), variant="default", id="cancel")
+                yield Button(t("tui_btn_publish"), variant="primary", id="ok")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "ok":
@@ -320,7 +338,9 @@ class PublishModal(ModalScreen[tuple[str, str, list[str]] | None]):
         uri = self.query_one("#uri-input", Input).value.strip()
         path = self.query_one("#site-input", Input).value.strip()
         if not uri or not path:
-            self.app.notify("URI and path are required", severity="warning")
+            self.app.notify(
+                t("tui_notify_uri_and_path_required"), severity="warning"
+            )
             return
         cats = list(self.query_one("#categories-list", SelectionList).selected)
         self.dismiss((uri, path, cats))
@@ -373,20 +393,21 @@ class ReviewerSettingsModal(ModalScreen[Optional[tuple[str, list[str]]]]):
         self._language = language
 
     def compose(self) -> ComposeResult:
-        state = "[b green]enabled[/]" if self._is_enabled else "[b]disabled[/]"
+        state_word = (
+            t("tui_label_state_enabled") if self._is_enabled
+            else t("tui_label_state_disabled")
+        )
+        state = f"[b green]{state_word}[/]" if self._is_enabled else f"[b]{state_word}[/]"
         pubkey_line = (
-            f"[dim]Pubkey: {self._pubkey}[/]"
+            f"[dim]{t('tui_label_pubkey', pubkey=self._pubkey)}[/]"
             if self._pubkey
-            else "[dim](no identity yet — will be generated on enable)[/]"
+            else f"[dim]{t('tui_label_no_identity')}[/]"
         )
         with Vertical(id="dialog"):
-            yield Label("[b]Reviewer mode[/]")
-            yield Label(f"Current state: {state}")
+            yield Label(f"[b]{t('tui_modal_reviewer_title')}[/]")
+            yield Label(f"{t('tui_label_current_state')} {state}")
             yield Label(pubkey_line)
-            yield Label(
-                "\nCategories you accept to review "
-                "(space or click to toggle; empty = any):"
-            )
+            yield Label(f"\n{t('tui_label_reviewer_categories')}")
             yield SelectionList[str](
                 *[
                     Selection(lbl, slug, initial_state=(slug in self._categories))
@@ -395,12 +416,12 @@ class ReviewerSettingsModal(ModalScreen[Optional[tuple[str, list[str]]]]):
                 id="categories-list",
             )
             with Horizontal(id="buttons"):
-                yield Button("Cancel", variant="default", id="cancel")
+                yield Button(t("tui_btn_cancel"), variant="default", id="cancel")
                 if self._is_enabled:
-                    yield Button("Disable", variant="error", id="disable")
-                    yield Button("Update", variant="primary", id="enable")
+                    yield Button(t("tui_btn_disable"), variant="error", id="disable")
+                    yield Button(t("tui_btn_update"), variant="primary", id="enable")
                 else:
-                    yield Button("Enable", variant="primary", id="enable")
+                    yield Button(t("tui_btn_enable"), variant="primary", id="enable")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cancel":
@@ -450,31 +471,35 @@ class InboxModal(ModalScreen[Optional[tuple[str, dict]]]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
-            yield Label(f"[b]Inbox — {len(self._pending)} review(s) pending[/]")
+            yield Label(
+                f"[b]{t('tui_modal_inbox_title', count=len(self._pending))}[/]"
+            )
             yield ListView(id="inbox-list")
             with Horizontal(id="buttons"):
-                yield Button("Fetch", variant="primary", id="fetch")
-                yield Button("Ok", variant="success", id="ok")
-                yield Button("Warn", variant="warning", id="warn")
-                yield Button("Reject", variant="error", id="reject")
-                yield Button("Close", variant="default", id="cancel")
+                yield Button(t("tui_btn_fetch"), variant="primary", id="fetch")
+                yield Button(t("tui_btn_ok"), variant="success", id="ok")
+                yield Button(t("tui_btn_warn"), variant="warning", id="warn")
+                yield Button(t("tui_btn_reject"), variant="error", id="reject")
+                yield Button(t("tui_btn_close"), variant="default", id="cancel")
 
     async def on_mount(self) -> None:
         list_view = self.query_one("#inbox-list", ListView)
         if not self._pending:
             await list_view.append(
                 ListItem(
-                    Static("inbox is empty", classes="muted"), disabled=True
+                    Static(t("tui_label_inbox_empty"), classes="muted"),
+                    disabled=True,
                 )
             )
             return
         for idx, entry in enumerate(self._pending):
             r = entry["record"]
             deadline_str = _format_deadline(int(r.get("deadline", 0)))
+            short = r.get("content_key", "")[:24]
             label = Label(
                 f"[b]md://{r.get('uri', '—')}[/]\n"
-                f"  deadline: {deadline_str}\n"
-                f"  [dim]content_key {r.get('content_key', '')[:24]}…[/]"
+                f"  {t('tui_label_deadline', deadline=deadline_str)}\n"
+                f"  [dim]{t('tui_label_content_key_short', short=short)}[/]"
             )
             await list_view.append(ListItem(label, id=f"inbox-{idx}"))
         list_view.focus()
@@ -492,7 +517,9 @@ class InboxModal(ModalScreen[Optional[tuple[str, dict]]]):
             return
         record = self._highlighted_record()
         if record is None:
-            self.app.notify("select an assignment first", severity="warning")
+            self.app.notify(
+                t("tui_notify_select_assignment"), severity="warning"
+            )
             return
         self.dismiss((event.button.id, record))
 
@@ -530,19 +557,13 @@ class AutoSeedModal(ModalScreen[bool]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
-            yield Label("[b]Keep your sites online?[/]")
-            yield Label(
-                "Your sites are only reachable on the P2P network while an "
-                "mdp2p process is running."
-            )
-            yield Label(
-                "Install a background service so seeding starts automatically "
-                "at login?"
-            )
+            yield Label(f"[b]{t('tui_modal_autoseed_title')}[/]")
+            yield Label(t("tui_label_autoseed_body_1"))
+            yield Label(t("tui_label_autoseed_body_2"))
             yield Label("")
             with Horizontal(id="buttons"):
-                yield Button("Skip", variant="default", id="skip")
-                yield Button("Enable", variant="primary", id="ok")
+                yield Button(t("tui_btn_skip"), variant="default", id="skip")
+                yield Button(t("tui_btn_enable"), variant="primary", id="ok")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "ok")
@@ -585,13 +606,13 @@ class Mdp2pTUI(App[None]):
     """
 
     BINDINGS = [
-        Binding("q", "quit", "Quit"),
-        Binding("f", "fetch", "Fetch new URI"),
-        Binding("p", "publish", "Publish site"),
-        Binding("r", "refresh", "Refresh"),
-        Binding("i", "inbox", "Inbox"),
-        Binding("R", "reviewer_settings", "Reviewer"),
-        Binding("slash", "focus_search", "Search"),
+        Binding("q", "quit", t("tui_bind_quit")),
+        Binding("f", "fetch", t("tui_bind_fetch")),
+        Binding("p", "publish", t("tui_bind_publish")),
+        Binding("r", "refresh", t("tui_bind_refresh")),
+        Binding("i", "inbox", t("tui_bind_inbox")),
+        Binding("R", "reviewer_settings", t("tui_bind_reviewer")),
+        Binding("slash", "focus_search", t("tui_bind_search")),
         Binding("ctrl+f", "fetch", show=False),
         Binding("ctrl+p", "publish", show=False),
         Binding("escape", "focus_list", show=False),
@@ -610,7 +631,7 @@ class Mdp2pTUI(App[None]):
         yield Header(show_clock=False)
         with Horizontal():
             with Vertical(id="sidebar"):
-                yield Input(placeholder="🔍  Filter…", id="search")
+                yield Input(placeholder=t("tui_filter_placeholder"), id="search")
                 yield ListView(id="sites")
             with VerticalScroll(id="content"):
                 yield Markdown(self._welcome_markdown(), id="render")
@@ -635,17 +656,16 @@ class Mdp2pTUI(App[None]):
         naming = self.config.naming_multiaddr or "—"
         host = naming.split("/")[2] if naming.startswith(("/dns4/", "/ip4/")) else naming[:40]
         return (
-            f"# Welcome, **{self.config.author}**\n\n"
-            f"Connected to `{host}` — browse any site other peers have "
-            "published on the network.\n\n"
-            "## What you can do\n\n"
-            "- Pick a site in the sidebar, or\n"
-            "- Press **`f`** to fetch a new URI by name\n"
-            "- Press **`p`** to publish a folder of `.md` files as a new site\n"
-            "- Press **`/`** to search your locally cached sites\n"
-            "- Press **`r`** to refresh the list, **`q`** to quit\n\n"
+            f"# {t('tui_welcome_title', author=self.config.author)}\n\n"
+            f"{t('tui_welcome_connected', host=host)}\n\n"
+            f"## {t('tui_welcome_what')}\n\n"
+            f"- {t('tui_welcome_bullet_pick')}\n"
+            f"- {t('tui_welcome_bullet_fetch')}\n"
+            f"- {t('tui_welcome_bullet_publish')}\n"
+            f"- {t('tui_welcome_bullet_search')}\n"
+            f"- {t('tui_welcome_bullet_refresh')}\n\n"
             "---\n\n"
-            f"*Local cache:* `{self.config.data_dir}`\n"
+            f"{t('tui_welcome_cache', path=self.config.data_dir)}\n"
         )
 
     async def _load_sites(self) -> None:
@@ -668,9 +688,9 @@ class Mdp2pTUI(App[None]):
 
         if not visible:
             msg = (
-                "no sites yet — press [b]f[/] to fetch one"
+                t("tui_sidebar_empty_no_sites")
                 if not self._sites
-                else "no match for your filter"
+                else t("tui_sidebar_empty_no_match")
             )
             await list_view.append(
                 ListItem(Static(msg, classes="muted"), disabled=True)
@@ -723,7 +743,7 @@ class Mdp2pTUI(App[None]):
 
     async def action_refresh(self) -> None:
         await self._load_sites()
-        self.notify("sites reloaded", timeout=2)
+        self.notify(t("tui_notify_sites_reloaded"), timeout=2)
 
     def action_focus_search(self) -> None:
         self.query_one("#search", Input).focus()
@@ -736,7 +756,7 @@ class Mdp2pTUI(App[None]):
             if result is None:
                 return
             uri, naming_maddr = result
-            self.notify(f"Fetching md://{uri}…", timeout=3)
+            self.notify(t("tui_notify_fetching", uri=uri), timeout=3)
             self._run_fetch(uri, naming_maddr)
 
         self.push_screen(
@@ -787,7 +807,9 @@ class Mdp2pTUI(App[None]):
 
         if result.returncode == 0:
             self.call_from_thread(
-                self.notify, f"md://{uri} fetched ✓", severity="information"
+                self.notify,
+                t("tui_notify_fetched", uri=uri),
+                severity="information",
             )
             self.call_from_thread(self._load_sites)
             self.call_from_thread(self._maybe_offer_auto_seed)
@@ -844,8 +866,7 @@ class Mdp2pTUI(App[None]):
 
         pubkey = self._current_reviewer_pubkey() or "(unknown)"
         self.notify(
-            f"Reviewer mode enabled ✓ — pubkey {pubkey[:12]}… "
-            "Restart the seeder to apply.",
+            t("tui_notify_reviewer_enabled", pubkey=pubkey[:12]),
             severity="information",
             timeout=10,
         )
@@ -858,18 +879,14 @@ class Mdp2pTUI(App[None]):
             self.notify(f"reviewer disable failed: {e}", severity="error", timeout=10)
             return
         self.notify(
-            "Reviewer mode disabled ✓ — identity preserved. "
-            "Restart the seeder to apply.",
+            t("tui_notify_reviewer_disabled"),
             severity="information",
             timeout=10,
         )
 
     def action_inbox(self) -> None:
         if not self.config.reviewer_mode:
-            self.notify(
-                "reviewer mode disabled — set reviewer_mode=true in config",
-                severity="warning",
-            )
+            self.notify(t("tui_notify_no_reviewer_mode"), severity="warning")
             return
         self._open_inbox()
 
@@ -921,7 +938,7 @@ class Mdp2pTUI(App[None]):
             uri = record.get("uri", "")
             content_key = record.get("content_key", "")
             if action == "fetch":
-                self.notify(f"Fetching md://{uri}…", timeout=3)
+                self.notify(t("tui_notify_fetching", uri=uri), timeout=3)
                 self._run_fetch(uri, self.config.naming_multiaddr)
             elif action in ("ok", "warn", "reject"):
                 self.notify(f"Posting review ({action}) for md://{uri}…", timeout=3)
@@ -957,7 +974,8 @@ class Mdp2pTUI(App[None]):
 
         if result.returncode == 0:
             self.call_from_thread(
-                self.notify, f"review posted ({verdict}) ✓",
+                self.notify,
+                t("tui_notify_review_posted", verdict=verdict),
                 severity="information",
             )
         else:
@@ -969,17 +987,14 @@ class Mdp2pTUI(App[None]):
 
     def action_publish(self) -> None:
         if not self.config.naming_multiaddr:
-            self.notify(
-                "No naming server configured. Run `mdp2p setup` first.",
-                severity="error",
-            )
+            self.notify(t("tui_notify_no_naming"), severity="error")
             return
 
         def _handle(result: tuple[str, str, list[str]] | None) -> None:
             if result is None:
                 return
             uri, site_path, cats = result
-            self.notify(f"Publishing md://{uri}…", timeout=3)
+            self.notify(t("tui_notify_publishing", uri=uri), timeout=3)
             self._run_publish(uri, site_path, cats)
 
         self.push_screen(PublishModal(language=self.config.language), callback=_handle)
@@ -1048,7 +1063,9 @@ class Mdp2pTUI(App[None]):
 
         if result.returncode == 0:
             self.call_from_thread(
-                self.notify, f"md://{uri} published ✓", severity="information"
+                self.notify,
+                t("tui_notify_published", uri=uri),
+                severity="information",
             )
             self.call_from_thread(self._load_sites)
             self.call_from_thread(self._maybe_offer_auto_seed)
@@ -1085,7 +1102,7 @@ class Mdp2pTUI(App[None]):
             except Exception:
                 pass
             if accepted:
-                self.notify("Installing auto-seeder service…", timeout=3)
+                self.notify(t("tui_notify_autoseed_installing"), timeout=3)
                 self._install_service()
 
         self.push_screen(AutoSeedModal(), callback=_handle)
@@ -1114,7 +1131,9 @@ class Mdp2pTUI(App[None]):
 
         if result.returncode == 0:
             self.call_from_thread(
-                self.notify, "Auto-seeder enabled ✓", severity="information"
+                self.notify,
+                t("tui_notify_autoseed_enabled"),
+                severity="information",
             )
         else:
             tail = (result.stderr or result.stdout).strip().splitlines()
@@ -1131,6 +1150,9 @@ def run() -> None:
 
     silence_libp2p_noise()
     config = load_or_create_config()
+    # Make sure the TUI renders in the user's language even when launched
+    # directly (bypassing app.py's main which already calls load_language).
+    load_language(config.language)
     Mdp2pTUI(config=config).run()
 
 
