@@ -257,8 +257,15 @@ async def solicit_env(tmp_path: Path):
         reviewer_store = ReviewerStore(str(tmp_path / "reviewers.json"))
         assignment_store = AssignmentStore(str(tmp_path / "assignments.json"))
         attachment_store = AttachmentStore(str(tmp_path / "attachments.json"))
+        # These tests exercise store mechanics with ad-hoc keys; the
+        # anti-abuse gating has its own suite in test_naming_anti_abuse.py.
         server = NamingServer(
-            server_host, store, reviewer_store, assignment_store, attachment_store
+            server_host,
+            store,
+            reviewer_store,
+            assignment_store,
+            attachment_store,
+            strict_reviews=False,
         )
         server.attach()
 
