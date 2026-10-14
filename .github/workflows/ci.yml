@@ -7,7 +7,7 @@ on:
 
 jobs:
   python:
-    name: Python tests + vectors
+    name: Python tests + vectors + Rust interop
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -16,13 +16,19 @@ jobs:
           python-version: "3.11"
       - name: System deps (fastecdsa needs GMP)
         run: sudo apt-get update && sudo apt-get install -y libgmp-dev
+      # tests/test_rust_interop.py builds rust/mdp2p-node and runs it
+      # against the Python peer-zero; without cargo those tests skip.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
       - run: pip install -e ".[dev]"
       - name: Vectors are up to date with the reference
         run: python scripts/gen_vectors.py --check
       - run: pytest tests/ -q
 
   rust:
-    name: Rust core (vectors, clippy, wasm)
+    name: Rust (vectors, clippy, wasm)
     runs-on: ubuntu-22.04
     defaults:
       run:
