@@ -15,13 +15,15 @@ from libp2p.network.stream.net_stream import INetStream
 
 
 async def read_exact(stream: INetStream, n: int) -> Optional[bytes]:
-    buf = b""
+    # bytearray keeps reassembly linear: `bytes += chunk` copies the whole
+    # buffer on every chunk, which is quadratic on a 100 MiB bundle.
+    buf = bytearray()
     while len(buf) < n:
         chunk = await stream.read(n - len(buf))
         if not chunk:
             return None
         buf += chunk
-    return buf
+    return bytes(buf)
 
 
 async def send_framed_json(

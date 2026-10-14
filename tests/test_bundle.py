@@ -408,3 +408,51 @@ class TestValidateUri:
     def test_rejects_starting_with_hyphen(self):
         with pytest.raises(ValueError, match="invalid characters"):
             validate_uri("-flag")
+
+
+# ─── Received-bundle hardening ──────────────────────────────────────────
+
+
+class TestDictToBundleIntegrity:
+    def _signed_payload(self, tmp_site, tmp_key) -> dict:
+        private_key = load_private_key(tmp_key[0])
+        manifest = create_manifest(str(tmp_site), uri="test", author="alice")
+        signed, sig = sign_manifest(manifest, private_key)
+        save_bundle(str(tmp_site), signed, sig)
+        return bundle_to_dict(str(tmp_site))
+
+    def test_rejects_unlisted_file(self, tmp_site, tmp_key, tmp_path):
+        data = self._signed_payload(tmp_site, tmp_key)
+        data["files"]["planted.md"] = "# not in the manifest"
+        with pytest.raises(ValueError, match="do not match manifest"):
+            dict_to_bundle(data, str(tmp_path / "out"))
+        assert not (tmp_path / "out").exists()
+
+    def test_rejects_corrupted_content_before_writing(
+        self, tmp_site, tmp_key, tmp_path
+    ):
+        data = self._signed_payload(tmp_site, tmp_key)
+        data["files"]["index.md"] = "# tampered"
+        with pytest.raises(ValueError, match="CORRUPTED"):
+            dict_to_bundle(data, str(tmp_path / "out"))
+        assert not (tmp_path / "out").exists()
+
+    def test_failed_update_keeps_previous_copy(self, tmp_site, tmp_key, tmp_path):
+        data = self._signed_payload(tmp_site, tmp_key)
+        out = tmp_path / "out"
+        dict_to_bundle(data, str(out))
+        original = (out / "index.md").read_bytes()
+
+        bad = dict(data, files=dict(data["files"], **{"index.md": "# evil"}))
+        with pytest.raises(ValueError):
+            dict_to_bundle(bad, str(out))
+        assert (out / "index.md").read_bytes() == original
+        assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".")] == []
+
+    def test_crlf_content_survives_roundtrip(self, tmp_site, tmp_key, tmp_path):
+        (tmp_site / "index.md").write_bytes(b"# Title\r\nWindows line\r\n")
+        data = self._signed_payload(tmp_site, tmp_key)
+        out = tmp_path / "out"
+        dict_to_bundle(data, str(out))
+        assert (out / "index.md").read_bytes() == b"# Title\r\nWindows line\r\n"
+        assert verify_files(data["manifest"], str(out)) == []
