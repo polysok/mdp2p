@@ -436,4 +436,20 @@ def test_fetch_fails_closed_on_corrupted_pinstore(tmp_path):
             ok = await bob.fetch_site("blog.alice", seeder_addrs=alice.addrs)
             assert ok is False
 
+
+def test_fetch_bundle_larger_than_noise_frame(tmp_path):
+    """Bundles above 64 KiB used to fail: Noise caps a single write at 65535."""
+    site_src = tmp_path / "src_site"
+    big_page = "# Big\n" + "lorem ipsum dolor sit amet\n" * 10_000  # ~270 KB
+    _make_site(site_src, {"index.md": big_page})
+    priv_path, _ = generate_keypair(str(tmp_path / "keys"), "alice_blog")
+
+    async def main():
+        async with naming_and_peers(tmp_path, n_peers=2) as (naming_info, peers):
+            alice, bob = peers
+            await alice.publish("big.alice", "alice", str(site_src), priv_path)
+            assert await bob.fetch_site("big.alice", seeder_addrs=alice.addrs)
+            fetched = Path(bob.sites["big.alice"]) / "index.md"
+            assert fetched.read_text() == big_page
+
     _run(main)
