@@ -44,11 +44,29 @@ def generate_keypair(
         serialization.PublicFormat.SubjectPublicKeyInfo,
     )
 
-    priv_path.write_bytes(priv_pem)
-    os.chmod(priv_path, stat.S_IRUSR | stat.S_IWUSR)  # 0o600
+    write_private_file(priv_path, priv_pem)
     pub_path.write_bytes(pub_pem)
 
     return str(priv_path), str(pub_path)
+
+
+def write_private_file(path: Path, data: bytes) -> None:
+    """Write secret bytes to ``path`` readable by the owner only.
+
+    The file is created with mode 0o600 from the start (no window where it
+    is world-readable under the default umask, unlike write-then-chmod).
+    """
+    mode = stat.S_IRUSR | stat.S_IWUSR
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    try:
+        # O_CREAT's mode is ignored for a pre-existing file: tighten it too.
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, mode)
+        view = memoryview(data)
+        while view:
+            view = view[os.write(fd, view):]
+    finally:
+        os.close(fd)
 
 
 def load_private_key(

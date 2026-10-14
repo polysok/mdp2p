@@ -28,7 +28,6 @@ import argparse
 import json
 import logging
 import os
-import stat
 import sys
 from pathlib import Path
 from typing import Optional
@@ -43,6 +42,7 @@ from libp2p.network.stream.net_stream import INetStream
 from libp2p.peer.peerinfo import PeerInfo
 
 from bundle import validate_uri, verify_name_record
+from bundle.crypto import write_private_file
 from review import (
     verify_review_assignment,
     verify_review_record,
@@ -651,8 +651,7 @@ def load_or_create_peer_seed(path: str) -> bytes:
 
     p.parent.mkdir(parents=True, exist_ok=True)
     seed = os.urandom(32)
-    p.write_bytes(seed)
-    os.chmod(p, stat.S_IRUSR | stat.S_IWUSR)
+    write_private_file(p, seed)
     logger.info("Generated fresh peer key at %s", p)
     return seed
 
