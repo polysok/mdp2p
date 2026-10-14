@@ -1,0 +1,197 @@
+{
+  "cases": [
+    {
+      "manifest": {
+        "author": "alice",
+        "categories": [
+          "computing"
+        ],
+        "expires_at": 1792591940,
+        "file_count": 2,
+        "files": [
+          {
+            "hash": "d76e07521457fe47d33ec9e89d23e14d1233dd72a087a992fa175daa9e691f29",
+            "path": "index.md",
+            "size": 26
+          },
+          {
+            "hash": "359647087a893f7c25a5afaa60efe4def62c2a8688bc644ad794832cf1ce12b7",
+            "path": "posts/one.md",
+            "size": 13
+          }
+        ],
+        "public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+        "timestamp": 1789999940,
+        "total_size": 39,
+        "uri": "blog.alice",
+        "version": 1
+      },
+      "manifest_ref": "955a3d2ab3cd97bf7f6e09835a6ce204e5effab49e2c1dc49db70f65a33bc054",
+      "name": "valid",
+      "signature": "52swnKKT/LqOCp0e27AkrLmkMgynraVYSOvpzgEYWnJwR+l35J8hudt5v28cDxq5DNAmHuFEL2qx2qt2xSodCw==",
+      "trusted_public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "valid": true
+    },
+    {
+      "manifest": {
+        "author": "alice",
+        "categories": [
+          "computing"
+        ],
+        "expires_at": 1792591940,
+        "file_count": 2,
+        "files": [
+          {
+            "hash": "d76e07521457fe47d33ec9e89d23e14d1233dd72a087a992fa175daa9e691f29",
+            "path": "index.md",
+            "size": 26
+          },
+          {
+            "hash": "359647087a893f7c25a5afaa60efe4def62c2a8688bc644ad794832cf1ce12b7",
+            "path": "posts/one.md",
+            "size": 13
+          }
+        ],
+        "public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+        "timestamp": 1789999940,
+        "total_size": 39,
+        "uri": "blog.alice",
+        "version": 2
+      },
+      "manifest_ref": "27c19f044e1b0873e45e22e2250ff0dc7f62ba78f3ede424479eea5187029b26",
+      "name": "field_tampered_after_signing",
+      "signature": "52swnKKT/LqOCp0e27AkrLmkMgynraVYSOvpzgEYWnJwR+l35J8hudt5v28cDxq5DNAmHuFEL2qx2qt2xSodCw==",
+      "trusted_public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "valid": false
+    },
+    {
+      "manifest": {
+        "author": "alice",
+        "categories": [
+          "computing"
+        ],
+        "expires_at": 1792591940,
+        "file_count": 2,
+        "files": [
+          {
+            "hash": "d76e07521457fe47d33ec9e89d23e14d1233dd72a087a992fa175daa9e691f29",
+            "path": "index.md",
+            "size": 26
+          },
+          {
+            "hash": "359647087a893f7c25a5afaa60efe4def62c2a8688bc644ad794832cf1ce12b7",
+            "path": "posts/one.md",
+            "size": 13
+          }
+        ],
+        "public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+        "timestamp": 1789999940,
+        "total_size": 39,
+        "uri": "blog.alice",
+        "version": 1
+      },
+      "manifest_ref": "955a3d2ab3cd97bf7f6e09835a6ce204e5effab49e2c1dc49db70f65a33bc054",
+      "name": "signature_bit_flipped",
+      "signature": "5mswnKKT/LqOCp0e27AkrLmkMgynraVYSOvpzgEYWnJwR+l35J8hudt5v28cDxq5DNAmHuFEL2qx2qt2xSodCw==",
+      "trusted_public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "valid": false
+    },
+    {
+      "manifest": {
+        "author": "alice",
+        "categories": [
+          "computing"
+        ],
+        "expires_at": 1792591940,
+        "file_count": 2,
+        "files": [
+          {
+            "hash": "d76e07521457fe47d33ec9e89d23e14d1233dd72a087a992fa175daa9e691f29",
+            "path": "index.md",
+            "size": 26
+          },
+          {
+            "hash": "359647087a893f7c25a5afaa60efe4def62c2a8688bc644ad794832cf1ce12b7",
+            "path": "posts/one.md",
+            "size": 13
+          }
+        ],
+        "public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+        "timestamp": 1789999940,
+        "total_size": 39,
+        "uri": "blog.alice",
+        "version": 1
+      },
+      "manifest_ref": "955a3d2ab3cd97bf7f6e09835a6ce204e5effab49e2c1dc49db70f65a33bc054",
+      "name": "wrong_trusted_key",
+      "signature": "52swnKKT/LqOCp0e27AkrLmkMgynraVYSOvpzgEYWnJwR+l35J8hudt5v28cDxq5DNAmHuFEL2qx2qt2xSodCw==",
+      "trusted_public_key": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+      "valid": false
+    },
+    {
+      "manifest": {
+        "author": "alice",
+        "categories": [
+          "computing"
+        ],
+        "expires_at": 1792591940,
+        "file_count": 2,
+        "files": [
+          {
+            "hash": "d76e07521457fe47d33ec9e89d23e14d1233dd72a087a992fa175daa9e691f29",
+            "path": "index.md",
+            "size": 26
+          },
+          {
+            "hash": "359647087a893f7c25a5afaa60efe4def62c2a8688bc644ad794832cf1ce12b7",
+            "path": "posts/one.md",
+            "size": 13
+          }
+        ],
+        "public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+        "timestamp": 1789999940,
+        "total_size": 39,
+        "uri": "blog.alice",
+        "version": 1
+      },
+      "manifest_ref": "955a3d2ab3cd97bf7f6e09835a6ce204e5effab49e2c1dc49db70f65a33bc054",
+      "name": "signed_by_other_key",
+      "signature": "rH70sSqZ9ihABTTTOqQxjbp8zg1Y5qcGeqQZIS1IxAoYNTnMRH0YtrLu4kQlbp8cIQOHfm3ca0vxjS/IjJnsBQ==",
+      "trusted_public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "valid": false
+    },
+    {
+      "manifest": {
+        "author": "alice",
+        "categories": [
+          "computing"
+        ],
+        "expires_at": 1792591940,
+        "file_count": 2,
+        "files": [
+          {
+            "hash": "d76e07521457fe47d33ec9e89d23e14d1233dd72a087a992fa175daa9e691f29",
+            "path": "index.md",
+            "size": 26
+          },
+          {
+            "hash": "359647087a893f7c25a5afaa60efe4def62c2a8688bc644ad794832cf1ce12b7",
+            "path": "posts/one.md",
+            "size": 13
+          }
+        ],
+        "public_key": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+        "timestamp": 1789999940,
+        "total_size": 39,
+        "uri": "blog.alice",
+        "version": 1
+      },
+      "manifest_ref": "31404e0af5a3b6a539825ae8b02094c3376749e49ab2189ea057b6055387576e",
+      "name": "embedded_key_not_trusted",
+      "signature": "wVStYfSILnhrmaMclytW0Dm/Nk77SZUYVZWI3dTTOvPxgTnlR0gDK4jcK3j4279bZFc9sR0t0l7kFC85tbv5DA==",
+      "trusted_public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "valid": false
+    }
+  ],
+  "version": 1
+}

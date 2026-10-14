@@ -26,7 +26,9 @@ def validate_uri(uri: str) -> str:
         raise ValueError(f"URI contains forbidden characters: {uri!r}")
     if uri in (".", "..") or ".." in uri:
         raise ValueError(f"URI contains path traversal: {uri!r}")
-    if not _VALID_URI_RE.match(uri):
+    # fullmatch, not match: "$" also matches before a trailing newline, so
+    # match() let "blog\n" through.
+    if not _VALID_URI_RE.fullmatch(uri):
         raise ValueError(
             f"URI contains invalid characters (allowed: a-z, 0-9, '.', '-', '_'): {uri!r}"
         )
@@ -36,8 +38,18 @@ def validate_uri(uri: str) -> str:
 def validate_path(base_dir: Path, relative_path: str) -> Path:
     """Resolve and validate that a path stays within base_dir.
 
-    Raises ValueError on path traversal or excessive depth.
+    Raises ValueError on path traversal or excessive depth. Paths must be
+    normalized ("/"-separated, no empty, "." or ".." segment) and free of
+    backslashes and NUL bytes, so a path means the same thing on every
+    platform (a backslash is a separator on Windows only).
     """
+    if "\\" in relative_path or "\x00" in relative_path:
+        raise ValueError(f"Path contains forbidden characters: {relative_path!r}")
+    segments = relative_path.split("/")
+    if any(seg in ("", ".", "..") for seg in segments):
+        # Only normalized paths: otherwise "a/../b.md" and "b.md" would be
+        # two manifest entries for one file on disk.
+        raise ValueError(f"Path is not normalized: {relative_path!r}")
     resolved = (base_dir / relative_path).resolve()
     base_resolved = base_dir.resolve()
     if not resolved.is_relative_to(base_resolved):

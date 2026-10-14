@@ -1,0 +1,15 @@
+{
+  "cases": [
+    {
+      "content_key": "/mdp2p/017c10d44825d5f98c5b02e63eb2417a50e948695b849270fe10fbcf7ff24516",
+      "public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "uri": "blog.alice"
+    },
+    {
+      "content_key": "/mdp2p/5dc9ba7c81fa71c6df3c835e9575d590e778167702bf9feecc67e3be13b8a90e",
+      "public_key": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+      "uri": "x"
+    }
+  ],
+  "version": 1
+}
