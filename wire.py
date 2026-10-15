@@ -13,15 +13,21 @@ from typing import Optional
 
 from libp2p.network.stream.net_stream import INetStream
 
+# The Noise transport rejects any single write above 65535 bytes, so large
+# frames are written in slices that leave room for its framing overhead.
+WRITE_CHUNK_SIZE = 32 * 1024
+
 
 async def read_exact(stream: INetStream, n: int) -> Optional[bytes]:
-    buf = b""
+    # bytearray keeps reassembly linear: `bytes += chunk` copies the whole
+    # buffer on every chunk, which is quadratic on a 100 MiB bundle.
+    buf = bytearray()
     while len(buf) < n:
         chunk = await stream.read(n - len(buf))
         if not chunk:
             return None
         buf += chunk
-    return buf
+    return bytes(buf)
 
 
 async def send_framed_json(
@@ -30,7 +36,9 @@ async def send_framed_json(
     payload = json.dumps(obj, separators=(",", ":"), sort_keys=True).encode("utf-8")
     if len(payload) > max_size:
         raise ValueError(f"message too large: {len(payload)} > {max_size}")
-    await stream.write(struct.pack("!I", len(payload)) + payload)
+    frame = memoryview(struct.pack("!I", len(payload)) + payload)
+    for start in range(0, len(frame), WRITE_CHUNK_SIZE):
+        await stream.write(bytes(frame[start : start + WRITE_CHUNK_SIZE]))
 
 
 async def recv_framed_json(

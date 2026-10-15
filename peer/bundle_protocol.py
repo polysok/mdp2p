@@ -26,10 +26,18 @@ logger = logging.getLogger("mdp2p.peer.protocol")
 
 BUNDLE_PROTOCOL = TProtocol("/mdp2p/bundle/1.0.0")
 MAX_BUNDLE_MSG_SIZE = 100 * 1024 * 1024  # 100 MiB — bundle cap is 50 MiB in bundle.py
+REQUEST_READ_TIMEOUT = 10.0  # seconds a seeder waits for the request frame
+MAX_REQUEST_SIZE = 64 * 1024  # get_bundle / get_manifest requests
+DEFAULT_SEEDER_TIMEOUT = 120.0  # seconds to dial + download from one seeder
+MAX_PARALLEL_SEEDERS = 4  # bounds memory: each in-flight bundle can be ~100 MiB
 
 
 # A lookup returns the local site directory for a given uri, or None if absent.
 SitesLookup = Callable[[str], Optional[str]]
+
+# A validator returns None when a downloaded bundle is acceptable, or a
+# human-readable reason when it must be discarded.
+BundleValidator = Callable[[dict], Optional[str]]
 
 
 async def _send_error(stream: INetStream, message: str) -> None:
@@ -47,48 +55,84 @@ async def try_download_from_seeders(
     uri: str,
     seeder_addrs: list[str],
     logger: logging.Logger,
+    validate: Optional[BundleValidator] = None,
+    timeout: float = DEFAULT_SEEDER_TIMEOUT,
 ) -> Optional[dict]:
-    """Try each seeder in parallel; return the first successful bundle.
+    """Try seeders in parallel; return the first bundle that passes ``validate``.
+
+    Provider records in the DHT are unauthenticated, so any peer can claim
+    to seed a uri. Validating each response individually means a single
+    hostile or broken seeder cannot make the whole fetch fail; the first
+    valid response cancels the remaining downloads, and every attempt is
+    bounded by ``timeout`` so a stalling seeder cannot hang the caller.
 
     ``host`` and ``relay_transport`` are passed in rather than pulled from
     a Peer instance so this helper can be unit-tested without constructing
     a full Peer. The ``logger`` argument lets callers keep their own
     category-specific logger in the output.
     """
-    results: list[Optional[dict]] = [None] * len(seeder_addrs)
+    winner: list[dict] = []
+    limiter = trio.CapacityLimiter(MAX_PARALLEL_SEEDERS)
 
-    async def try_one(idx: int, addr_str: str) -> None:
+    async def try_one(addr_str: str, cancel_scope: trio.CancelScope) -> None:
+        async with limiter:
+            with trio.move_on_after(timeout) as attempt:
+                response = await _download_one(host, relay_transport, uri, addr_str)
+            if attempt.cancelled_caught:
+                logger.warning("fetch from %s timed out after %.0fs", addr_str, timeout)
+                return
+        if response is None or winner:
+            return
+        reason = validate(response) if validate is not None else None
+        if reason is not None:
+            logger.warning("discarding bundle from %s: %s", addr_str, reason)
+            return
+        winner.append(response)
+        cancel_scope.cancel()
+
+    async def guarded(addr_str: str, cancel_scope: trio.CancelScope) -> None:
         try:
-            maddr = multiaddr.Multiaddr(addr_str)
-            info = info_from_p2p_addr(maddr)
-            if "/p2p-circuit/" in addr_str and relay_transport is not None:
-                # CircuitV2Transport needs the destination peer in the
-                # peerstore to complete the dial, even though the circuit
-                # address already carries the peer_id.
-                host.get_peerstore().add_addrs(info.peer_id, [maddr], 3600)
-                await relay_transport.dial(maddr)
-            else:
-                await host.connect(info)
-            stream = await host.new_stream(info.peer_id, [BUNDLE_PROTOCOL])
-            try:
-                await send_framed_json(
-                    stream, {"type": "get_bundle", "uri": uri}, MAX_BUNDLE_MSG_SIZE
-                )
-                response = await recv_framed_json(stream, MAX_BUNDLE_MSG_SIZE)
-            finally:
-                await stream.close()
-            if response and response.get("type") == "bundle":
-                results[idx] = response
+            await try_one(addr_str, cancel_scope)
         except Exception as e:
             logger.warning("fetch from %s failed: %s", addr_str, e)
 
     async with trio.open_nursery() as nursery:
-        for idx, addr in enumerate(seeder_addrs):
-            nursery.start_soon(try_one, idx, addr)
+        for addr in seeder_addrs:
+            nursery.start_soon(guarded, addr, nursery.cancel_scope)
 
-    for r in results:
-        if r is not None:
-            return r
+    return winner[0] if winner else None
+
+
+async def _download_one(
+    host: IHost,
+    relay_transport: Optional[CircuitV2Transport],
+    uri: str,
+    addr_str: str,
+) -> Optional[dict]:
+    """Dial one seeder and request the bundle. Returns the raw response or None."""
+    maddr = multiaddr.Multiaddr(addr_str)
+    info = info_from_p2p_addr(maddr)
+    if "/p2p-circuit/" in addr_str and relay_transport is not None:
+        # CircuitV2Transport needs the destination peer in the
+        # peerstore to complete the dial, even though the circuit
+        # address already carries the peer_id.
+        host.get_peerstore().add_addrs(info.peer_id, [maddr], 3600)
+        await relay_transport.dial(maddr)
+    else:
+        await host.connect(info)
+    stream = await host.new_stream(info.peer_id, [BUNDLE_PROTOCOL])
+    try:
+        await send_framed_json(
+            stream, {"type": "get_bundle", "uri": uri}, MAX_BUNDLE_MSG_SIZE
+        )
+        response = await recv_framed_json(stream, MAX_BUNDLE_MSG_SIZE)
+    finally:
+        # Shielded so a timeout or a sibling's win still releases the
+        # stream, but bounded so a peer that never ACKs cannot stall us.
+        with trio.CancelScope(shield=True), trio.move_on_after(2):
+            await stream.close()
+    if isinstance(response, dict) and response.get("type") == "bundle":
+        return response
     return None
 
 
@@ -106,8 +150,12 @@ def make_bundle_handler(
 
     async def handler(stream: INetStream) -> None:
         try:
-            msg = await recv_framed_json(stream, MAX_BUNDLE_MSG_SIZE)
-            if msg is None:
+            # Requests are tiny; cap both their size and how long a client
+            # may take to send one, so idle streams cannot pin seeder memory.
+            msg = None
+            with trio.move_on_after(REQUEST_READ_TIMEOUT):
+                msg = await recv_framed_json(stream, MAX_REQUEST_SIZE)
+            if not isinstance(msg, dict):
                 return
             msg_type = msg.get("type", "")
             uri = msg.get("uri", "")

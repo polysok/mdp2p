@@ -52,6 +52,7 @@ from .serialization import (
     dict_to_bundle,
     load_bundle,
     save_bundle,
+    validate_bundle_payload,
 )
 
 __all__ = [
@@ -91,4 +92,5 @@ __all__ = [
     "dict_to_bundle",
     "load_bundle",
     "save_bundle",
+    "validate_bundle_payload",
 ]

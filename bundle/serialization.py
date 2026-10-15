@@ -4,7 +4,10 @@ Handles the on-disk layout (manifest.json + manifest.sig next to the files)
 and the dict-based representation used to ship a bundle across the network.
 """
 
+import hashlib
 import json
+import os
+import shutil
 from pathlib import Path
 from typing import List, Tuple
 
@@ -39,7 +42,9 @@ def bundle_to_dict(site_dir: str) -> dict:
     files = {}
     for entry in manifest["files"]:
         fpath = validate_path(site_path, entry["path"])
-        files[entry["path"]] = fpath.read_text(encoding="utf-8")
+        # Decode the raw bytes rather than read_text(): universal-newline
+        # translation would turn CRLF into LF and break the manifest hash.
+        files[entry["path"]] = fpath.read_bytes().decode("utf-8")
     return {
         "manifest": manifest,
         "signature": signature,
@@ -47,35 +52,95 @@ def bundle_to_dict(site_dir: str) -> dict:
     }
 
 
-def dict_to_bundle(data: dict, output_dir: str) -> str:
-    """Reconstruct a bundle from a dict received over the network.
+def validate_bundle_payload(data: dict, output_dir: str) -> List[Tuple[str, bytes]]:
+    """Check a received bundle dict in memory. Returns [(path, raw bytes)].
 
-    Validates path safety, file count, and total size before writing anything.
+    Validates path safety (relative to ``output_dir``), file count, total
+    size, and that the set of files is exactly the one listed in the
+    manifest with matching SHA-256 hashes. Raises ValueError otherwise.
+    Does not verify the manifest signature.
     """
     manifest = data["manifest"]
     files_data = data["files"]
 
     file_count = manifest.get("file_count", len(files_data))
-    if file_count > MAX_BUNDLE_FILES:
+    if file_count > MAX_BUNDLE_FILES or len(files_data) > MAX_BUNDLE_FILES:
         raise ValueError(f"Too many files: {file_count} (max {MAX_BUNDLE_FILES})")
 
     out = Path(output_dir).resolve()
 
-    validated_files: List[Tuple[Path, str]] = []
+    validated_files: List[Tuple[str, bytes]] = []
     actual_total_size = 0
     for path, content in files_data.items():
-        fpath = validate_path(out, path)
-        actual_total_size += len(content.encode("utf-8"))
+        if not isinstance(path, str) or not isinstance(content, str):
+            raise ValueError("bundle files must map str paths to str contents")
+        validate_path(out, path)
+        raw = content.encode("utf-8")
+        actual_total_size += len(raw)
         if actual_total_size > MAX_BUNDLE_TOTAL_SIZE:
             raise ValueError(
                 f"Actual content exceeds size limit ({MAX_BUNDLE_TOTAL_SIZE} bytes)"
             )
-        validated_files.append((fpath, content))
+        validated_files.append((path, raw))
 
-    out.mkdir(parents=True, exist_ok=True)
-    for fpath, content in validated_files:
-        fpath.parent.mkdir(parents=True, exist_ok=True)
-        fpath.write_text(content, encoding="utf-8")
+    expected = {entry["path"]: entry["hash"] for entry in manifest["files"]}
+    if set(files_data) != set(expected):
+        extra = sorted(set(files_data) - set(expected))
+        missing = sorted(set(expected) - set(files_data))
+        raise ValueError(
+            f"files do not match manifest (extra={extra}, missing={missing})"
+        )
+    for path, raw in validated_files:
+        if not path.endswith(".md"):
+            raise ValueError(f"only .md files are allowed in a bundle: {path}")
+        if hashlib.sha256(raw).hexdigest() != expected[path]:
+            raise ValueError(f"CORRUPTED: {path}")
+    return validated_files
 
-    save_bundle(output_dir, data["manifest"], data["signature"])
+
+def dict_to_bundle(data: dict, output_dir: str) -> str:
+    """Reconstruct a bundle from a dict received over the network.
+
+    Everything is validated in memory first (see validate_bundle_payload),
+    then written to a temporary sibling directory and swapped into place,
+    so a hostile or truncated transfer can never clobber a previously-good
+    local copy or leave unlisted files behind.
+
+    The caller is still responsible for verifying the manifest signature.
+    """
+    validated_files = validate_bundle_payload(data, output_dir)
+    out = Path(output_dir).resolve()
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    staging = out.parent / f".{out.name}.staging-{os.getpid()}"
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir()
+    try:
+        for path, raw in validated_files:
+            fpath = validate_path(staging, path)
+            fpath.parent.mkdir(parents=True, exist_ok=True)
+            fpath.write_bytes(raw)
+        save_bundle(str(staging), data["manifest"], data["signature"])
+        _swap_into_place(staging, out)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
     return str(out)
+
+
+def _swap_into_place(staging: Path, out: Path) -> None:
+    """Replace ``out`` with ``staging`` using renames (no partial state)."""
+    if not out.exists():
+        staging.rename(out)
+        return
+    backup = out.parent / f".{out.name}.old-{os.getpid()}"
+    if backup.exists():
+        shutil.rmtree(backup)
+    out.rename(backup)
+    try:
+        staging.rename(out)
+    except BaseException:
+        backup.rename(out)
+        raise
+    shutil.rmtree(backup, ignore_errors=True)

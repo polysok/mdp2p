@@ -33,6 +33,7 @@ from bundle import (
     save_bundle,
     sign_manifest,
     sign_name_record,
+    validate_bundle_payload,
     validate_path,
     validate_uri,
     verify_files,
@@ -111,7 +112,8 @@ class Peer:
     def _rediscover_local_sites(self) -> None:
         """Populate self.sites by scanning data_dir for previously-seeded bundles."""
         for site_dir in self.data_dir.iterdir() if self.data_dir.exists() else []:
-            if not site_dir.is_dir():
+            # Dot-prefixed dirs are staging/backup leftovers of dict_to_bundle.
+            if not site_dir.is_dir() or site_dir.name.startswith("."):
                 continue
             try:
                 manifest, _ = load_bundle(str(site_dir))
@@ -386,6 +388,16 @@ class Peer:
         if not ok:
             logger.error("naming record signature invalid for %s: %s", uri, err)
             return False
+        # The signature proves who wrote the record, not which name it was
+        # written for: without this check a naming server could answer a
+        # resolve for "bank" with a validly-signed record for "evil".
+        if record.get("uri") != uri:
+            logger.error(
+                "naming returned a record for %r when resolving %r; aborting",
+                record.get("uri"),
+                uri,
+            )
+            return False
 
         author_pub_b64 = record["public_key"]
         expected_ref = record["manifest_ref"]
@@ -413,37 +425,33 @@ class Peer:
             )
             return False
 
-        bundle_data = await try_download_from_seeders(
-            self.host, self.relay_transport, uri, seeder_addrs, logger
-        )
-        if bundle_data is None:
-            logger.error("all seeders failed for %s", uri)
-            return False
-
-        manifest = bundle_data["manifest"]
-        signature_b64 = bundle_data["signature"]
         trusted_key = b64_to_public_key(author_pub_b64)
 
-        if not verify_manifest(manifest, signature_b64, trusted_key):
-            logger.error("manifest signature invalid for %s", uri)
-            return False
-
-        actual_ref = compute_manifest_ref(manifest)
-        if actual_ref != expected_ref:
-            logger.error(
-                "manifest ref mismatch for %s: naming says %s, got %s",
-                uri,
-                expected_ref,
-                actual_ref,
-            )
-            return False
-
-        if is_manifest_expired(manifest):
-            logger.error("manifest expired for %s", uri)
-            return False
-
         site_dir = str(self.data_dir / uri)
-        dict_to_bundle(bundle_data, site_dir)
+
+        def validate(bundle_data: dict) -> Optional[str]:
+            return _check_downloaded_bundle(
+                bundle_data, uri, trusted_key, expected_ref, site_dir
+            )
+
+        bundle_data = await try_download_from_seeders(
+            self.host,
+            self.relay_transport,
+            uri,
+            seeder_addrs,
+            logger,
+            validate=validate,
+        )
+        if bundle_data is None:
+            logger.error("no seeder returned a valid bundle for %s", uri)
+            return False
+        manifest = bundle_data["manifest"]
+
+        try:
+            dict_to_bundle(bundle_data, site_dir)
+        except (ValueError, KeyError, TypeError) as e:
+            logger.error("rejected bundle content for %s: %s", uri, e)
+            return False
 
         errors = verify_files(manifest, site_dir)
         if errors:
@@ -534,7 +542,21 @@ class Peer:
             finally:
                 await stream.close()
             if response and response.get("type") == "manifest":
-                remote_ts = int(response["manifest"].get("timestamp", 0))
+                remote = response.get("manifest")
+                # An unauthenticated timestamp would let any seeder fake
+                # "update available"; only trust a manifest signed by the
+                # same author key for the same uri.
+                if not isinstance(remote, dict) or remote.get("uri") != uri:
+                    return False
+                local_key = b64_to_public_key(local_manifest["public_key"])
+                if not verify_manifest(
+                    remote, str(response.get("signature", "")), local_key
+                ):
+                    logger.warning(
+                        "check_for_update: bad signature from %s", seeder_addr
+                    )
+                    return False
+                remote_ts = int(remote.get("timestamp", 0))
                 return remote_ts > local_ts
         except Exception as e:
             logger.warning("check_for_update failed: %s", e)
@@ -606,6 +628,44 @@ class Peer:
             output.append(content.strip())
             output.append(f"└{'─' * 50}┘\n")
         return "\n".join(output)
+
+
+def _check_downloaded_bundle(
+    bundle_data: dict,
+    uri: str,
+    trusted_key,
+    expected_ref: str,
+    site_dir: str,
+) -> Optional[str]:
+    """Return None if a seeder's response is acceptable, else the reason.
+
+    Runs every check in memory — signature, name binding, manifest ref,
+    expiry and per-file hashes — so a bad seeder is discarded before its
+    content is written anywhere and another seeder can still win.
+    """
+    manifest = bundle_data.get("manifest")
+    signature_b64 = bundle_data.get("signature")
+    if not isinstance(manifest, dict) or not isinstance(signature_b64, str):
+        return "malformed bundle response"
+    if not isinstance(bundle_data.get("files"), dict):
+        return "malformed bundle files"
+    try:
+        if not verify_manifest(manifest, signature_b64, trusted_key):
+            return "manifest signature invalid"
+    except Exception as e:
+        return f"manifest verification error: {e}"
+    if manifest.get("uri") != uri:
+        return f"manifest is for {manifest.get('uri')!r}, not {uri!r}"
+    actual_ref = compute_manifest_ref(manifest)
+    if actual_ref != expected_ref:
+        return f"manifest ref mismatch: naming says {expected_ref}, got {actual_ref}"
+    if is_manifest_expired(manifest):
+        return "manifest expired"
+    try:
+        validate_bundle_payload(bundle_data, site_dir)
+    except (ValueError, KeyError, TypeError) as e:
+        return f"bundle content rejected: {e}"
+    return None
 
 
 def _attachments_to_signals(

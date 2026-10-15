@@ -261,6 +261,144 @@ def test_manifest_ref_mismatch_aborts(tmp_path):
     _run(main)
 
 
+# ─── Hostile seeders / naming ───────────────────────────────────────────
+
+def test_fetch_skips_tampering_seeder_and_uses_honest_one(tmp_path):
+    """A single bad provider must not make the fetch fail (DHT poisoning)."""
+    import shutil
+
+    site_src = tmp_path / "src_site"
+    _make_site(site_src, {"index.md": "# Genuine"})
+    priv_path, _ = generate_keypair(str(tmp_path / "keys"), "alice_blog")
+
+    async def main():
+        async with naming_and_peers(tmp_path, n_peers=3) as (naming_info, peers):
+            alice, mallory, bob = peers
+            await alice.publish("blog.alice", "alice", str(site_src), priv_path)
+
+            # Mallory seeds a copy with the genuine signed manifest but
+            # altered content.
+            evil_dir = tmp_path / "mallory_copy"
+            shutil.copytree(alice.sites["blog.alice"], evil_dir)
+            (evil_dir / "index.md").write_text("# Pwned", encoding="utf-8")
+            mallory.sites["blog.alice"] = str(evil_dir)
+
+            ok = await bob.fetch_site(
+                "blog.alice", seeder_addrs=mallory.addrs + alice.addrs
+            )
+            assert ok is True
+            fetched = Path(bob.sites["blog.alice"]) / "index.md"
+            assert fetched.read_text() == "# Genuine"
+
+    _run(main)
+
+
+def test_fetch_rejects_record_for_another_uri(tmp_path, monkeypatch):
+    """A naming server must not be able to answer 'bank' with 'evil'."""
+    import peer.peer as peer_module
+
+    site_src = tmp_path / "src_site"
+    _make_site(site_src, {"index.md": "# Evil"})
+    priv_path, _ = generate_keypair(str(tmp_path / "keys"), "mallory_evil")
+
+    async def main():
+        async with naming_and_peers(tmp_path, n_peers=2) as (naming_info, peers):
+            mallory, bob = peers
+            await mallory.publish("evil", "mallory", str(site_src), priv_path)
+            # Mallory also answers bundle requests for "bank" with her site.
+            mallory.sites["bank"] = mallory.sites["evil"]
+
+            real_resolve = peer_module.naming_resolve
+
+            async def lying_resolve(host, info, uri):
+                return await real_resolve(host, info, "evil")
+
+            monkeypatch.setattr(peer_module, "naming_resolve", lying_resolve)
+            ok = await bob.fetch_site("bank", seeder_addrs=mallory.addrs)
+            assert ok is False
+            assert "bank" not in load_pinstore(bob.pinstore_path)
+
+    _run(main)
+
+
+def test_download_does_not_hang_on_stalling_seeder(tmp_path):
+    """A seeder that never answers is abandoned after the timeout."""
+    from peer.bundle_protocol import BUNDLE_PROTOCOL, try_download_from_seeders
+
+    site_src = tmp_path / "src_site"
+    _make_site(site_src, {"index.md": "# Hello"})
+    priv_path, _ = generate_keypair(str(tmp_path / "keys"), "alice_blog")
+
+    async def main():
+        async with naming_and_peers(tmp_path, n_peers=3) as (naming_info, peers):
+            alice, staller, bob = peers
+            await alice.publish("blog.alice", "alice", str(site_src), priv_path)
+
+            async def never_answer(stream):
+                await trio.sleep_forever()
+
+            staller.host.set_stream_handler(BUNDLE_PROTOCOL, never_answer)
+
+            import logging
+
+            with trio.fail_after(10):
+                stalled_only = await try_download_from_seeders(
+                    bob.host, None, "blog.alice", staller.addrs[:1],
+                    logging.getLogger("test"), timeout=1.0,
+                )
+                assert stalled_only is None
+
+                result = await try_download_from_seeders(
+                    bob.host, None, "blog.alice",
+                    staller.addrs[:1] + alice.addrs[:1],
+                    logging.getLogger("test"), timeout=5.0,
+                )
+                assert result is not None
+                assert result["manifest"]["uri"] == "blog.alice"
+
+    _run(main)
+
+
+def test_check_for_update_ignores_unsigned_newer_manifest(tmp_path):
+    """A seeder cannot fake 'update available' with an unsigned timestamp."""
+    site_src = tmp_path / "src_site"
+    _make_site(site_src, {"index.md": "# v1"})
+    priv_path, _ = generate_keypair(str(tmp_path / "keys"), "alice_blog")
+
+    async def main():
+        async with naming_and_peers(tmp_path, n_peers=2) as (naming_info, peers):
+            alice, bob = peers
+            await alice.publish("blog.alice", "alice", str(site_src), priv_path)
+            assert await bob.fetch_site("blog.alice", seeder_addrs=alice.addrs)
+
+            served = Path(alice.sites["blog.alice"])
+            manifest, _ = load_bundle(str(served))
+            manifest["timestamp"] += 3600  # forged, signature left untouched
+            (served / "manifest.json").write_text(json.dumps(manifest))
+
+            assert await bob.check_for_update("blog.alice", alice.addrs[0]) is False
+
+    _run(main)
+
+
+def test_fetch_bundle_larger_than_noise_frame(tmp_path):
+    """Bundles above 64 KiB used to fail: Noise caps a single write at 65535."""
+    site_src = tmp_path / "src_site"
+    big_page = "# Big\n" + "lorem ipsum dolor sit amet\n" * 10_000  # ~270 KB
+    _make_site(site_src, {"index.md": big_page})
+    priv_path, _ = generate_keypair(str(tmp_path / "keys"), "alice_blog")
+
+    async def main():
+        async with naming_and_peers(tmp_path, n_peers=2) as (naming_info, peers):
+            alice, bob = peers
+            await alice.publish("big.alice", "alice", str(site_src), priv_path)
+            assert await bob.fetch_site("big.alice", seeder_addrs=alice.addrs)
+            fetched = Path(bob.sites["big.alice"]) / "index.md"
+            assert fetched.read_text() == big_page
+
+    _run(main)
+
+
 def _leaf_exceptions(exc: BaseException) -> list[BaseException]:
     if isinstance(exc, BaseExceptionGroup):
         return [leaf for sub in exc.exceptions for leaf in _leaf_exceptions(sub)]
