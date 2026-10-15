@@ -19,13 +19,11 @@ from pathlib import Path
 
 import multiaddr
 import trio
-from libp2p import new_host
-from libp2p.crypto.ed25519 import create_new_key_pair
 from libp2p.peer.peerinfo import info_from_p2p_addr
 from libp2p.utils.address_validation import find_free_port
 
 from bundle import generate_keypair, load_bundle
-from naming import NameStore, NamingServer, load_or_create_peer_seed
+from naming import NameStore, NamingServer
 from peer import link_peers_dht, run_peer
 
 DEMO_DIR = Path("./demo_run")
@@ -100,34 +98,26 @@ survit tant qu'au moins un peer est en ligne.
 
 @asynccontextmanager
 async def run_naming(data_dir: Path):
-    """Run a naming server in-process; yields its PeerInfo."""
-    port = find_free_port()
-    key_path = data_dir / "naming.key"
-    seed = load_or_create_peer_seed(str(key_path))
-    host = new_host(key_pair=create_new_key_pair(seed))
+    """Run an in-process peer-zero (naming + DHT on one host); yields its PeerInfo.
 
-    async with (
-        host.run(
-            listen_addrs=[multiaddr.Multiaddr(f"/ip4/127.0.0.1/tcp/{port}")]
-        ),
-        trio.open_nursery() as nursery,
-    ):
-        nursery.start_soon(host.get_peerstore().start_cleanup_task, 60)
-
+    Same topology as peer_zero.py in production. A bare naming host without
+    a DHT made every peer log Kademlia errors: they treat the naming peer as
+    their DHT entry point (ADD_PROVIDER, provider lookups) and it answered
+    "protocol not supported".
+    """
+    async with run_peer(
+        data_dir=str(data_dir / "peer_zero"),
+        port=find_free_port(),
+        listen_host="127.0.0.1",
+        pinstore_path=str(data_dir / "pin_peer_zero.json"),
+    ) as peer_zero:
         store = NameStore(str(data_dir / "naming_records.json"))
-        server = NamingServer(host, store)
-        server.attach()
+        NamingServer(peer_zero.host, store).attach()
 
-        maddr_str = (
-            f"/ip4/127.0.0.1/tcp/{port}/p2p/{host.get_id().to_string()}"
-        )
+        maddr_str = peer_zero.addrs[0]
         info = info_from_p2p_addr(multiaddr.Multiaddr(maddr_str))
         print(f"[DEMO] Naming server listening at {maddr_str}")
-
-        try:
-            yield info
-        finally:
-            nursery.cancel_scope.cancel()
+        yield info
 
 
 async def run_demo():
@@ -160,6 +150,10 @@ async def run_demo():
                 listen_host="127.0.0.1",
                 naming_info=naming_info,
                 pinstore_path=str(DEMO_DIR / f"pin_{name}.json"),
+                bootstrap_multiaddrs=[
+                    f"{addr}/p2p/{naming_info.peer_id.to_string()}"
+                    for addr in naming_info.addrs
+                ],
             )
             for name in ("alice", "bob", "charlie")
         ]
