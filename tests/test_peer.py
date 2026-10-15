@@ -381,6 +381,62 @@ def test_check_for_update_ignores_unsigned_newer_manifest(tmp_path):
     _run(main)
 
 
+def test_fetch_rejects_rolled_back_naming_record(tmp_path, monkeypatch):
+    """Once v2 was seen, replaying the (still validly signed) v1 is refused.
+
+    Mallory kept a copy of v1 and the naming server replays the v1 record:
+    every signature and ref check passes, only freshness can catch it.
+    """
+    import shutil
+
+    import peer.peer as peer_module
+
+    site_src = tmp_path / "src_site"
+    _make_site(site_src, {"index.md": "# v1"})
+    priv_path, _ = generate_keypair(str(tmp_path / "keys"), "alice_blog")
+
+    async def main():
+        async with naming_and_peers(tmp_path, n_peers=3) as (naming_info, peers):
+            alice, mallory, bob = peers
+            real_resolve = peer_module.naming_resolve
+
+            await alice.publish("blog.alice", "alice", str(site_src), priv_path)
+            v1_resp = await real_resolve(bob.host, naming_info, "blog.alice")
+            v1_copy = tmp_path / "mallory_v1"
+            shutil.copytree(site_src, v1_copy)
+            mallory.sites["blog.alice"] = str(v1_copy)
+
+            (site_src / "index.md").write_text("# v2", encoding="utf-8")
+            time.sleep(1.1)
+            await alice.publish("blog.alice", "alice", str(site_src), priv_path)
+            assert await bob.fetch_site("blog.alice", seeder_addrs=alice.addrs)
+
+            async def replay_v1(host, info, uri):
+                return v1_resp
+
+            monkeypatch.setattr(peer_module, "naming_resolve", replay_v1)
+            ok = await bob.fetch_site("blog.alice", seeder_addrs=mallory.addrs)
+            assert ok is False
+            fetched = Path(bob.sites["blog.alice"]) / "index.md"
+            assert fetched.read_text() == "# v2"
+
+    _run(main)
+
+
+def test_fetch_fails_closed_on_corrupted_pinstore(tmp_path):
+    site_src = tmp_path / "src_site"
+    _make_site(site_src, {"index.md": "# Hello"})
+    priv_path, _ = generate_keypair(str(tmp_path / "keys"), "alice_blog")
+    (tmp_path / "pin_1.json").write_text("{not json", encoding="utf-8")
+
+    async def main():
+        async with naming_and_peers(tmp_path, n_peers=2) as (naming_info, peers):
+            alice, bob = peers
+            await alice.publish("blog.alice", "alice", str(site_src), priv_path)
+            ok = await bob.fetch_site("blog.alice", seeder_addrs=alice.addrs)
+            assert ok is False
+
+
 def test_fetch_bundle_larger_than_noise_frame(tmp_path):
     """Bundles above 64 KiB used to fail: Noise caps a single write at 65535."""
     site_src = tmp_path / "src_site"

@@ -1,4 +1,5 @@
 import os
+import stat
 import time
 from pathlib import Path
 
@@ -456,3 +457,13 @@ class TestDictToBundleIntegrity:
         dict_to_bundle(data, str(out))
         assert (out / "index.md").read_bytes() == b"# Title\r\nWindows line\r\n"
         assert verify_files(data["manifest"], str(out)) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permissions")
+def test_private_key_created_owner_only(tmp_path):
+    old_umask = os.umask(0o022)
+    try:
+        priv, _ = generate_keypair(str(tmp_path), "k")
+    finally:
+        os.umask(old_umask)
+    assert stat.S_IMODE(os.stat(priv).st_mode) == 0o600

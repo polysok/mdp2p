@@ -412,16 +412,29 @@ class Peer:
                 return False
             logger.info("DHT lookup for %s: %d provider(s)", uri, len(seeder_addrs))
 
-        pinstore_data = None
+        from pinstore import load_pinstore  # local import to avoid circular
+
         try:
-            from pinstore import load_pinstore  # local import to avoid circular
             pinstore_data = load_pinstore(self.pinstore_path)
-        except Exception:
-            pinstore_data = {}
-        pin_status = check_pin(pinstore_data, uri, author_pub_b64)
+        except (OSError, ValueError) as e:
+            # Fail closed: treating an unreadable pinstore as empty would
+            # silently re-TOFU every site and defeat key pinning.
+            logger.error(
+                "pinstore unreadable (%s): %s; aborting", self.pinstore_path, e
+            )
+            return False
+        record_ts = int(record["timestamp"])
+        pin_status = check_pin(pinstore_data, uri, author_pub_b64, record_ts)
         if pin_status == PinStatus.MISMATCH:
             logger.error(
                 "ALERT: public key changed for '%s' — possible MITM; aborting", uri
+            )
+            return False
+        if pin_status == PinStatus.ROLLBACK:
+            logger.error(
+                "ALERT: naming served an older record for '%s' than already "
+                "seen — possible rollback; aborting",
+                uri,
             )
             return False
 
@@ -459,10 +472,12 @@ class Peer:
             return False
 
         if pin_status == PinStatus.UNKNOWN:
-            pin_key(uri, author_pub_b64, record_author, self.pinstore_path)
+            pin_key(
+                uri, author_pub_b64, record_author, self.pinstore_path, record_ts
+            )
             logger.info("key pinned for '%s' (first visit)", uri)
         else:
-            update_pin_last_seen(uri, self.pinstore_path)
+            update_pin_last_seen(uri, self.pinstore_path, record_ts)
 
         self.sites[uri] = site_dir
         logger.info(
