@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["mdp2p-core"]
+members = ["mdp2p-core", "mdp2p-node"]
 
 [workspace.package]
 edition = "2021"
