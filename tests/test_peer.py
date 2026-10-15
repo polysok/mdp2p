@@ -397,3 +397,29 @@ def test_fetch_bundle_larger_than_noise_frame(tmp_path):
             assert fetched.read_text() == big_page
 
     _run(main)
+
+
+def _leaf_exceptions(exc: BaseException) -> list[BaseException]:
+    if isinstance(exc, BaseExceptionGroup):
+        return [leaf for sub in exc.exceptions for leaf in _leaf_exceptions(sub)]
+    return [exc]
+
+
+def test_run_peer_propagates_exceptions_from_its_body(tmp_path):
+    """Errors inside `async with run_peer()` used to vanish silently."""
+
+    async def main():
+        async with run_peer(
+            data_dir=str(tmp_path / "p"),
+            listen_host="127.0.0.1",
+            pinstore_path=str(tmp_path / "pin.json"),
+        ):
+            raise RuntimeError("boom")
+
+    try:
+        trio.run(main)
+    except BaseException as exc:  # noqa: BLE001 - inspecting the group
+        leaves = _leaf_exceptions(exc)
+        assert any(isinstance(e, RuntimeError) and str(e) == "boom" for e in leaves)
+    else:
+        raise AssertionError("exception from run_peer body was swallowed")
