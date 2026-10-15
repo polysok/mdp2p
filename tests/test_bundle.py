@@ -99,11 +99,18 @@ class TestValidatePath:
         assert result.is_relative_to(tmp_path)
 
     def test_traversal_blocked(self, tmp_path):
-        with pytest.raises(ValueError, match="Path traversal"):
+        with pytest.raises(ValueError, match="not normalized"):
             validate_path(tmp_path, "../../../etc/passwd")
 
+    def test_symlink_escape_blocked(self, tmp_path):
+        base = tmp_path / "site"
+        base.mkdir()
+        (base / "link").symlink_to(tmp_path)
+        with pytest.raises(ValueError, match="Path traversal"):
+            validate_path(base, "link/secret.md")
+
     def test_base_dir_blocked(self, tmp_path):
-        with pytest.raises(ValueError, match="base directory"):
+        with pytest.raises(ValueError, match="not normalized"):
             validate_path(tmp_path, ".")
 
     def test_too_deep(self, tmp_path):

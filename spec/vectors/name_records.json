@@ -1,0 +1,88 @@
+{
+  "cases": [
+    {
+      "max_drift": 300,
+      "name": "valid",
+      "now": 1790000000,
+      "record": {
+        "author": "alice",
+        "manifest_ref": "abababababababababababababababababababababababababababababababab",
+        "public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+        "timestamp": 1790000000,
+        "uri": "blog.alice"
+      },
+      "signature": "1BjmtcrWgDnMfdgWtABx2SKhl93l0ts/HiLdCjQytBOCiZLXkY1NQ8pzEZSgPZwGf2RCYZIATXSC5ozINStQAg==",
+      "valid": true
+    },
+    {
+      "max_drift": null,
+      "name": "valid_no_drift_check",
+      "now": 1790000000,
+      "record": {
+        "author": "alice",
+        "manifest_ref": "abababababababababababababababababababababababababababababababab",
+        "public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+        "timestamp": 1789996400,
+        "uri": "blog.alice"
+      },
+      "signature": "QGcU4CtMh2r4V7Exp/x5ettV9MZ0AnqSSNjI5amWgGhOj0vzSwTiMBttz+IoGBYQr3CCO1JATr88Rcn+wyC8Ag==",
+      "valid": true
+    },
+    {
+      "max_drift": 300,
+      "name": "stale_with_drift_check",
+      "now": 1790000000,
+      "record": {
+        "author": "alice",
+        "manifest_ref": "abababababababababababababababababababababababababababababababab",
+        "public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+        "timestamp": 1789996400,
+        "uri": "blog.alice"
+      },
+      "signature": "QGcU4CtMh2r4V7Exp/x5ettV9MZ0AnqSSNjI5amWgGhOj0vzSwTiMBttz+IoGBYQr3CCO1JATr88Rcn+wyC8Ag==",
+      "valid": false
+    },
+    {
+      "max_drift": 300,
+      "name": "uri_swapped",
+      "now": 1790000000,
+      "record": {
+        "author": "alice",
+        "manifest_ref": "abababababababababababababababababababababababababababababababab",
+        "public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+        "timestamp": 1790000000,
+        "uri": "bank"
+      },
+      "signature": "1BjmtcrWgDnMfdgWtABx2SKhl93l0ts/HiLdCjQytBOCiZLXkY1NQ8pzEZSgPZwGf2RCYZIATXSC5ozINStQAg==",
+      "valid": false
+    },
+    {
+      "max_drift": 300,
+      "name": "bad_signature",
+      "now": 1790000000,
+      "record": {
+        "author": "alice",
+        "manifest_ref": "abababababababababababababababababababababababababababababababab",
+        "public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+        "timestamp": 1790000000,
+        "uri": "blog.alice"
+      },
+      "signature": "1RjmtcrWgDnMfdgWtABx2SKhl93l0ts/HiLdCjQytBOCiZLXkY1NQ8pzEZSgPZwGf2RCYZIATXSC5ozINStQAg==",
+      "valid": false
+    },
+    {
+      "max_drift": 300,
+      "name": "missing_field",
+      "now": 1790000000,
+      "record": {
+        "author": "alice",
+        "public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+        "timestamp": 1790000000,
+        "uri": "blog.alice"
+      },
+      "signature": "vNYEjc7YKaswlhtP/AwFeKNGBo5+Czx49bnkT/ZHT+VFXwgWDzulaZ/zp0bBO7K22xab3e1b3d1H8UvrfxUBBA==",
+      "valid": false
+    }
+  ],
+  "version": 1
+}

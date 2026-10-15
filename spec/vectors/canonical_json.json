@@ -1,0 +1,93 @@
+{
+  "cases": [
+    {
+      "canonical": "{\"a\":2,\"b\":1,\"c\":{\"y\":null,\"z\":true}}",
+      "input": {
+        "a": 2,
+        "b": 1,
+        "c": {
+          "y": null,
+          "z": true
+        }
+      },
+      "name": "sorted_keys"
+    },
+    {
+      "canonical": "{\"files\":[{\"path\":\"b.md\"},{\"path\":\"a.md\"}],\"n\":0}",
+      "input": {
+        "files": [
+          {
+            "path": "b.md"
+          },
+          {
+            "path": "a.md"
+          }
+        ],
+        "n": 0
+      },
+      "name": "nested_list"
+    },
+    {
+      "canonical": "{\"s\":\"quote \\\" backslash \\\\ nl \\n tab \\t cr \\r\"}",
+      "input": {
+        "s": "quote \" backslash \\ nl \n tab \t cr \r"
+      },
+      "name": "escapes"
+    },
+    {
+      "canonical": "{\"s\":\"\\u0000\\u0001\\u001f\\u007f\"}",
+      "input": {
+        "s": "\u0000\u0001\u001f\u007f"
+      },
+      "name": "control_chars"
+    },
+    {
+      "canonical": "{\"s\":\"caf\\u00e9 \\u2014 \\u4e2d\\u6587 \\u0627\\u0644\\u0639\\u0631\\u0628\\u064a\\u0629\"}",
+      "input": {
+        "s": "caf\u00e9 \u2014 \u4e2d\u6587 \u0627\u0644\u0639\u0631\u0628\u064a\u0629"
+      },
+      "name": "non_ascii_bmp"
+    },
+    {
+      "canonical": "{\"s\":\"emoji \\ud83d\\ude42 math \\ud835\\udd38\"}",
+      "input": {
+        "s": "emoji \ud83d\ude42 math \ud835\udd38"
+      },
+      "name": "non_ascii_astral"
+    },
+    {
+      "canonical": "{\"e\":2,\"z\":3,\"\\u00e9\":1}",
+      "input": {
+        "e": 2,
+        "z": 3,
+        "\u00e9": 1
+      },
+      "name": "non_ascii_key"
+    },
+    {
+      "canonical": "{\"a\":-5,\"b\":9007199254740993}",
+      "input": {
+        "a": -5,
+        "b": 9007199254740993
+      },
+      "name": "negative_and_big_int"
+    },
+    {
+      "canonical": "{\"a\":{},\"b\":[],\"c\":\"\"}",
+      "input": {
+        "a": {},
+        "b": [],
+        "c": ""
+      },
+      "name": "empty_containers"
+    },
+    {
+      "canonical": "{\"uri\":\"/mdp2p/abc\"}",
+      "input": {
+        "uri": "/mdp2p/abc"
+      },
+      "name": "slash_not_escaped"
+    }
+  ],
+  "version": 1
+}
