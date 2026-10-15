@@ -109,3 +109,36 @@ class TestUpdateLastSeen:
     def test_noop_for_unknown_uri(self, pinstore_path):
         update_pin_last_seen("nonexistent", pinstore_path)
         assert load_pinstore(pinstore_path) == {}
+
+
+class TestRollbackProtection:
+    def test_older_record_is_rollback(self, pinstore_path):
+        pin_key("blog", "KEY", "alice", pinstore_path, record_timestamp=2000)
+        store = load_pinstore(pinstore_path)
+        assert check_pin(store, "blog", "KEY", 1999) == PinStatus.ROLLBACK
+        assert check_pin(store, "blog", "KEY", 2000) == PinStatus.MATCH
+        assert check_pin(store, "blog", "KEY", 2001) == PinStatus.MATCH
+
+    def test_key_mismatch_wins_over_rollback(self, pinstore_path):
+        pin_key("blog", "KEY", "alice", pinstore_path, record_timestamp=2000)
+        store = load_pinstore(pinstore_path)
+        assert check_pin(store, "blog", "OTHER", 1) == PinStatus.MISMATCH
+
+    def test_legacy_pin_without_timestamp_matches(self, pinstore_path):
+        pin_key("blog", "KEY", "alice", pinstore_path)
+        assert check_pin(load_pinstore(pinstore_path), "blog", "KEY", 1) == (
+            PinStatus.MATCH
+        )
+
+    def test_high_water_mark_never_decreases(self, pinstore_path):
+        pin_key("blog", "KEY", "alice", pinstore_path, record_timestamp=2000)
+        update_pin_last_seen("blog", pinstore_path, record_timestamp=1500)
+        assert load_pinstore(pinstore_path)["blog"]["record_timestamp"] == 2000
+        update_pin_last_seen("blog", pinstore_path, record_timestamp=3000)
+        assert load_pinstore(pinstore_path)["blog"]["record_timestamp"] == 3000
+
+    def test_save_leaves_no_temp_file(self, pinstore_path):
+        save_pinstore({"x": {}}, pinstore_path)
+        assert [p.name for p in Path(pinstore_path).parent.iterdir()] == [
+            "known_keys.json"
+        ]

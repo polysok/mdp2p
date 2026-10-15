@@ -1,0 +1,77 @@
+{
+  "cases": [
+    {
+      "uri": "blog.alice",
+      "valid": true
+    },
+    {
+      "uri": "a",
+      "valid": true
+    },
+    {
+      "uri": "my-site_2",
+      "valid": true
+    },
+    {
+      "uri": "A.b-C",
+      "valid": true
+    },
+    {
+      "uri": "",
+      "valid": false
+    },
+    {
+      "uri": ".hidden",
+      "valid": false
+    },
+    {
+      "uri": "-dash",
+      "valid": false
+    },
+    {
+      "uri": "a/b",
+      "valid": false
+    },
+    {
+      "uri": "a\\b",
+      "valid": false
+    },
+    {
+      "uri": "..",
+      "valid": false
+    },
+    {
+      "uri": "a..b",
+      "valid": false
+    },
+    {
+      "uri": "caf\u00e9",
+      "valid": false
+    },
+    {
+      "uri": "a b",
+      "valid": false
+    },
+    {
+      "uri": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "valid": true
+    },
+    {
+      "uri": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "valid": false
+    },
+    {
+      "uri": "nul\u0000byte",
+      "valid": false
+    },
+    {
+      "uri": "blog\n",
+      "valid": false
+    },
+    {
+      "uri": " blog",
+      "valid": false
+    }
+  ],
+  "version": 1
+}

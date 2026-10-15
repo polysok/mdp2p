@@ -1,0 +1,73 @@
+{
+  "cases": [
+    {
+      "path": "index.md",
+      "valid": true
+    },
+    {
+      "path": "posts/one.md",
+      "valid": true
+    },
+    {
+      "path": "./index.md",
+      "valid": false
+    },
+    {
+      "path": "a//b.md",
+      "valid": false
+    },
+    {
+      "path": "a/./b.md",
+      "valid": false
+    },
+    {
+      "path": "a/../b.md",
+      "valid": false
+    },
+    {
+      "path": "dir/",
+      "valid": false
+    },
+    {
+      "path": "d/d/d/d/d/d/d/d/d/x.md",
+      "valid": true
+    },
+    {
+      "path": "../escape.md",
+      "valid": false
+    },
+    {
+      "path": "a/../../escape.md",
+      "valid": false
+    },
+    {
+      "path": "/etc/passwd.md",
+      "valid": false
+    },
+    {
+      "path": "",
+      "valid": false
+    },
+    {
+      "path": ".",
+      "valid": false
+    },
+    {
+      "path": "a/..",
+      "valid": false
+    },
+    {
+      "path": "a\\b.md",
+      "valid": false
+    },
+    {
+      "path": "nul\u0000.md",
+      "valid": false
+    },
+    {
+      "path": "d/d/d/d/d/d/d/d/d/d/x.md",
+      "valid": false
+    }
+  ],
+  "version": 1
+}

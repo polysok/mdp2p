@@ -1,0 +1,139 @@
+{
+  "cases": [
+    {
+      "kind": "review_record",
+      "max_drift": 300,
+      "name": "valid",
+      "now": 1790000000,
+      "record": {
+        "comment": "sources?",
+        "content_key": "/mdp2p/017c10d44825d5f98c5b02e63eb2417a50e948695b849270fe10fbcf7ff24516",
+        "reviewer_public_key": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=",
+        "timestamp": 1790000000,
+        "verdict": "warn"
+      },
+      "signature": "cQY6jxqU0oVa737LpGVtvfaME7pv82VVCzofHv0Q4RFqIV+gS+M55PVezRMEehhZVFEuaSFNASZIWpaO/pwYAg==",
+      "valid": true
+    },
+    {
+      "kind": "review_record",
+      "max_drift": 300,
+      "name": "verdict_tampered",
+      "now": 1790000000,
+      "record": {
+        "comment": "sources?",
+        "content_key": "/mdp2p/017c10d44825d5f98c5b02e63eb2417a50e948695b849270fe10fbcf7ff24516",
+        "reviewer_public_key": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=",
+        "timestamp": 1790000000,
+        "verdict": "reject"
+      },
+      "signature": "cQY6jxqU0oVa737LpGVtvfaME7pv82VVCzofHv0Q4RFqIV+gS+M55PVezRMEehhZVFEuaSFNASZIWpaO/pwYAg==",
+      "valid": false
+    },
+    {
+      "kind": "review_record",
+      "max_drift": 300,
+      "name": "unknown_verdict",
+      "now": 1790000000,
+      "record": {
+        "comment": "sources?",
+        "content_key": "/mdp2p/017c10d44825d5f98c5b02e63eb2417a50e948695b849270fe10fbcf7ff24516",
+        "reviewer_public_key": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=",
+        "timestamp": 1790000000,
+        "verdict": "meh"
+      },
+      "signature": "l8pzirtJnaT5JO5LGgekPmWUTSBfcJKGuAWiq5j2TOPQEFLhy6ktDCqp1TSXx1SXRl0gdSy7Nq7kB4d32YSJBw==",
+      "valid": false
+    },
+    {
+      "kind": "reviewer_opt_in",
+      "max_drift": 300,
+      "name": "valid",
+      "now": 1790000000,
+      "record": {
+        "addrs": [
+          "/ip4/1.2.3.4/tcp/1707"
+        ],
+        "categories": [
+          "math"
+        ],
+        "peer_id": "12D3KooWExample",
+        "public_key": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=",
+        "timestamp": 1790000000
+      },
+      "signature": "+xR2OvUM3FcrB/ywZF+hMMxf3Qx2n5aPBS29dRAbjs8OJ/E9+kInyLI6UiTgv98Lsg7gJQbKpuya5H+wlZIjCw==",
+      "valid": true
+    },
+    {
+      "kind": "reviewer_opt_in",
+      "max_drift": 300,
+      "name": "categories_tampered",
+      "now": 1790000000,
+      "record": {
+        "addrs": [
+          "/ip4/1.2.3.4/tcp/1707"
+        ],
+        "categories": [],
+        "peer_id": "12D3KooWExample",
+        "public_key": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=",
+        "timestamp": 1790000000
+      },
+      "signature": "+xR2OvUM3FcrB/ywZF+hMMxf3Qx2n5aPBS29dRAbjs8OJ/E9+kInyLI6UiTgv98Lsg7gJQbKpuya5H+wlZIjCw==",
+      "valid": false
+    },
+    {
+      "kind": "reviewer_opt_in",
+      "max_drift": 300,
+      "name": "addrs_not_list",
+      "now": 1790000000,
+      "record": {
+        "addrs": "not-a-list",
+        "categories": [
+          "math"
+        ],
+        "peer_id": "12D3KooWExample",
+        "public_key": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=",
+        "timestamp": 1790000000
+      },
+      "signature": "k+tbgS7PEns7exn3CoxQSXJr67jn1NoCpyqvNpBT+AYBrCq/QKvWNHX+XoI1kP8UXfqiJn/c4A0vbtIh7WRYAg==",
+      "valid": false
+    },
+    {
+      "kind": "review_assignment",
+      "max_drift": 300,
+      "name": "valid",
+      "now": 1790000000,
+      "record": {
+        "content_key": "/mdp2p/017c10d44825d5f98c5b02e63eb2417a50e948695b849270fe10fbcf7ff24516",
+        "deadline": 1790086400,
+        "publisher_public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+        "reviewer_public_keys": [
+          "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E="
+        ],
+        "timestamp": 1790000000,
+        "uri": "blog.alice"
+      },
+      "signature": "/JZvancrKWZHxW7p8NobrD87Bbvhoh0Wht1uADRn1zCroa5kOLaO6Qfcc6QUc/g08PTBgFhi18JaDEkQ3+TXDg==",
+      "valid": true
+    },
+    {
+      "kind": "review_assignment",
+      "max_drift": 300,
+      "name": "content_key_not_derived",
+      "now": 1790000000,
+      "record": {
+        "content_key": "/mdp2p/017c10d44825d5f98c5b02e63eb2417a50e948695b849270fe10fbcf7ff24516",
+        "deadline": 1790086400,
+        "publisher_public_key": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+        "reviewer_public_keys": [
+          "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E="
+        ],
+        "timestamp": 1790000000,
+        "uri": "blog.alice"
+      },
+      "signature": "40S5s/Plk8bX9z7X88XVOA91F8T8QzWdKdm+dmW0WDmnepXzDaevxsFVLe2/fsZtvd6pf7so/ORquB7fowHXBA==",
+      "valid": false
+    }
+  ],
+  "version": 1
+}

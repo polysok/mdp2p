@@ -1,4 +1,5 @@
 import os
+import stat
 import time
 from pathlib import Path
 
@@ -98,11 +99,18 @@ class TestValidatePath:
         assert result.is_relative_to(tmp_path)
 
     def test_traversal_blocked(self, tmp_path):
-        with pytest.raises(ValueError, match="Path traversal"):
+        with pytest.raises(ValueError, match="not normalized"):
             validate_path(tmp_path, "../../../etc/passwd")
 
+    def test_symlink_escape_blocked(self, tmp_path):
+        base = tmp_path / "site"
+        base.mkdir()
+        (base / "link").symlink_to(tmp_path)
+        with pytest.raises(ValueError, match="Path traversal"):
+            validate_path(base, "link/secret.md")
+
     def test_base_dir_blocked(self, tmp_path):
-        with pytest.raises(ValueError, match="base directory"):
+        with pytest.raises(ValueError, match="not normalized"):
             validate_path(tmp_path, ".")
 
     def test_too_deep(self, tmp_path):
@@ -456,3 +464,13 @@ class TestDictToBundleIntegrity:
         dict_to_bundle(data, str(out))
         assert (out / "index.md").read_bytes() == b"# Title\r\nWindows line\r\n"
         assert verify_files(data["manifest"], str(out)) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permissions")
+def test_private_key_created_owner_only(tmp_path):
+    old_umask = os.umask(0o022)
+    try:
+        priv, _ = generate_keypair(str(tmp_path), "k")
+    finally:
+        os.umask(old_umask)
+    assert stat.S_IMODE(os.stat(priv).st_mode) == 0o600

@@ -1,0 +1,76 @@
+{
+  "cases": [
+    {
+      "entry": null,
+      "name": "unknown",
+      "public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "record_timestamp": 1790000000,
+      "status": "unknown"
+    },
+    {
+      "entry": {
+        "author": "alice",
+        "first_seen": 1789999901,
+        "last_seen": 1789999991,
+        "public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+        "record_timestamp": 1789999990
+      },
+      "name": "match",
+      "public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "record_timestamp": 1789999990,
+      "status": "match"
+    },
+    {
+      "entry": {
+        "author": "alice",
+        "first_seen": 1789999901,
+        "last_seen": 1789999991,
+        "public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+        "record_timestamp": 1789999990
+      },
+      "name": "newer_record",
+      "public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "record_timestamp": 1790000000,
+      "status": "match"
+    },
+    {
+      "entry": {
+        "author": "alice",
+        "first_seen": 1789999901,
+        "last_seen": 1789999991,
+        "public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+        "record_timestamp": 1789999990
+      },
+      "name": "rollback",
+      "public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "record_timestamp": 1789999989,
+      "status": "rollback"
+    },
+    {
+      "entry": {
+        "author": "alice",
+        "first_seen": 1789999901,
+        "last_seen": 1789999991,
+        "public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+        "record_timestamp": 1789999990
+      },
+      "name": "key_changed",
+      "public_key": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+      "record_timestamp": 1790000000,
+      "status": "mismatch"
+    },
+    {
+      "entry": {
+        "author": "alice",
+        "first_seen": 1789999901,
+        "last_seen": 1789999991,
+        "public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+      },
+      "name": "legacy_entry_without_timestamp",
+      "public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "record_timestamp": 1,
+      "status": "match"
+    }
+  ],
+  "version": 1
+}
