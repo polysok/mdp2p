@@ -54,6 +54,7 @@ async def env(
     tmp_path: Path,
     with_assignments: bool = True,
     with_attachments: bool = True,
+    strict_reviews: bool = False,
 ):
     server_host = _fresh_host()
     client_host = _fresh_host()
@@ -84,12 +85,15 @@ async def env(
             if with_attachments
             else None
         )
+        # These tests exercise store mechanics with ad-hoc keys; the
+        # anti-abuse gating has its own suite in test_naming_anti_abuse.py.
         server = NamingServer(
             server_host,
             store,
             reviewer_store,
             assignment_store,
             attachment_store,
+            strict_reviews=strict_reviews,
         )
         server.attach()
 

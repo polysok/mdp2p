@@ -11,15 +11,25 @@ so it is non-trusted: clients re-verify signatures upon resolve.
 Wire protocol: /mdp2p/naming/1.0.0
   register          : {"type": "register", "record": {...}, "signature": "<b64>"}
   resolve           : {"type": "resolve",  "uri": "<uri>"}
-  list              : {"type": "list"}
+  list              : {"type": "list", "offset": 0, "limit": 500}
   register_reviewer : {"type": "register_reviewer", "record": {...}, "signature": "<b64>"}
-  list_reviewers    : {"type": "list_reviewers"}
+  list_reviewers    : {"type": "list_reviewers", "offset": 0, "limit": 500}
   post_assignment   : {"type": "post_assignment", "record": {...}, "signature": "<b64>"}
   list_assignments  : {"type": "list_assignments", "reviewer_public_key": "<b64>"}
   attach_review     : {"type": "attach_review", "record": {...}, "signature": "<b64>"}
   get_attachments   : {"type": "get_attachments", "content_key": "<str>"}
 
 Every message on a stream is length-prefixed: [4 bytes big-endian length][JSON].
+
+Listing responses are paginated and carry ``next_offset`` (None on the last
+page) so they stay under MAX_MSG_SIZE however many records accumulate.
+
+Anti-abuse rules (``strict_reviews``, on by default):
+  - an assignment names at most MAX_REVIEWERS_PER_ASSIGNMENT reviewers,
+    all of them registered;
+  - a review is only attached if the reviewer was assigned that content
+    and signs before the assignment deadline. Otherwise anyone could mint
+    throwaway keys and attach enough "reject" reviews to hide any content.
 """
 
 from __future__ import annotations
@@ -54,6 +64,11 @@ logger = logging.getLogger("mdp2p.naming")
 
 NAMING_PROTOCOL = TProtocol("/mdp2p/naming/1.0.0")
 MAX_MSG_SIZE = 1 * 1024 * 1024  # 1 MiB is ample for any name record
+MAX_REQUEST_SIZE = 64 * 1024  # largest legitimate request is one signed record
+REQUEST_READ_TIMEOUT = 10.0  # seconds a client may take to send its request
+DEFAULT_PAGE_SIZE = 500
+MAX_PAGE_SIZE = 1000
+MAX_REVIEWERS_PER_ASSIGNMENT = 16
 DEFAULT_PORT = 1707
 DEFAULT_STORE_PATH = "./naming_data/records.json"
 DEFAULT_REVIEWERS_PATH = "./naming_data/reviewers.json"
@@ -265,6 +280,11 @@ class AssignmentStore:
     def list_for(self, reviewer_pubkey: str) -> list[tuple[dict, str]]:
         return list(self._inbox.get(reviewer_pubkey, {}).values())
 
+    def get(self, reviewer_pubkey: str, content_key: str) -> Optional[dict]:
+        """Return the assignment record naming this reviewer for this content."""
+        entry = self._inbox.get(reviewer_pubkey, {}).get(content_key)
+        return entry[0] if entry is not None else None
+
 
 # ─── Attachment store ────────────────────────────────────────────────
 
@@ -342,21 +362,25 @@ class NamingServer:
         reviewer_store: Optional[ReviewerStore] = None,
         assignment_store: Optional[AssignmentStore] = None,
         attachment_store: Optional[AttachmentStore] = None,
+        strict_reviews: bool = True,
     ):
         self.host = host
         self.store = store
         self.reviewer_store = reviewer_store
         self.assignment_store = assignment_store
         self.attachment_store = attachment_store
+        self.strict_reviews = strict_reviews
 
     def attach(self) -> None:
         self.host.set_stream_handler(NAMING_PROTOCOL, self._handle_stream)
 
     async def _handle_stream(self, stream: INetStream) -> None:
         try:
-            msg = await recv_json(stream)
-            if msg is None:
-                await _send_error(stream, "empty or malformed request")
+            msg = None
+            with trio.move_on_after(REQUEST_READ_TIMEOUT):
+                msg = await recv_framed_json(stream, MAX_REQUEST_SIZE)
+            if not isinstance(msg, dict):
+                await _send_error(stream, "empty, oversized or malformed request")
                 return
 
             msg_type = msg.get("type")
@@ -365,11 +389,11 @@ class NamingServer:
             elif msg_type == "resolve":
                 response = self._handle_resolve(msg)
             elif msg_type == "list":
-                response = self._handle_list()
+                response = self._handle_list(msg)
             elif msg_type == "register_reviewer":
                 response = self._handle_register_reviewer(msg)
             elif msg_type == "list_reviewers":
-                response = self._handle_list_reviewers()
+                response = self._handle_list_reviewers(msg)
             elif msg_type == "post_assignment":
                 response = self._handle_post_assignment(msg)
             elif msg_type == "list_assignments":
@@ -382,9 +406,9 @@ class NamingServer:
                 response = {"type": "error", "msg": f"unknown type: {msg_type}"}
 
             await send_json(stream, response)
-        except Exception as e:
+        except Exception:
             logger.exception("stream handler error")
-            await _send_error(stream, f"internal error: {e}")
+            await _send_error(stream, "internal error")
         finally:
             await stream.close()
 
@@ -431,8 +455,9 @@ class NamingServer:
         logger.info("RESOLVE %s", uri)
         return {"type": "record", "record": record, "signature": signature}
 
-    def _handle_list(self) -> dict:
-        return {"type": "names", "records": self.store.list_records()}
+    def _handle_list(self, msg: dict) -> dict:
+        page, next_offset = _paginate(self.store.list_records(), msg)
+        return {"type": "names", "records": page, "next_offset": next_offset}
 
     def _handle_register_reviewer(self, msg: dict) -> dict:
         if self.reviewer_store is None:
@@ -459,15 +484,16 @@ class NamingServer:
         )
         return {"type": "ok", "public_key": record.get("public_key")}
 
-    def _handle_list_reviewers(self) -> dict:
+    def _handle_list_reviewers(self, msg: dict) -> dict:
         if self.reviewer_store is None:
-            return {"type": "reviewers", "records": []}
+            return {"type": "reviewers", "records": [], "next_offset": None}
         # Return record + signature pairs so clients can re-verify.
         entries = [
             {"record": record, "signature": signature}
             for record, signature in self.reviewer_store.list_records()
         ]
-        return {"type": "reviewers", "records": entries}
+        page, next_offset = _paginate(entries, msg)
+        return {"type": "reviewers", "records": page, "next_offset": next_offset}
 
     def _handle_post_assignment(self, msg: dict) -> dict:
         if self.assignment_store is None:
@@ -481,6 +507,11 @@ class NamingServer:
         is_valid, err = verify_review_assignment(record, signature)
         if not is_valid:
             return {"type": "error", "msg": f"invalid signature: {err}"}
+
+        if self.strict_reviews:
+            err = self._check_assignment_reviewers(record)
+            if err:
+                return {"type": "error", "msg": err}
 
         ok, err = self.assignment_store.add(record, signature)
         if not ok:
@@ -519,6 +550,11 @@ class NamingServer:
         if not is_valid:
             return {"type": "error", "msg": f"invalid signature: {err}"}
 
+        if self.strict_reviews:
+            err = self._check_review_was_assigned(record)
+            if err:
+                return {"type": "error", "msg": err}
+
         ok, err = self.attachment_store.attach(record, signature)
         if not ok:
             return {"type": "error", "msg": err}
@@ -531,6 +567,35 @@ class NamingServer:
         )
         return {"type": "ok", "content_key": record.get("content_key")}
 
+    def _check_assignment_reviewers(self, record: dict) -> str:
+        """Return an error if the assignment's reviewer list is abusive."""
+        reviewers = record.get("reviewer_public_keys") or []
+        if len(reviewers) > MAX_REVIEWERS_PER_ASSIGNMENT:
+            return (
+                f"too many reviewers ({len(reviewers)} > "
+                f"{MAX_REVIEWERS_PER_ASSIGNMENT})"
+            )
+        if len(set(reviewers)) != len(reviewers):
+            return "duplicate reviewer in assignment"
+        if self.reviewer_store is not None:
+            unknown = [r for r in reviewers if self.reviewer_store.get(r) is None]
+            if unknown:
+                return f"{len(unknown)} reviewer(s) are not registered"
+        return ""
+
+    def _check_review_was_assigned(self, record: dict) -> str:
+        """Return an error unless this reviewer was assigned this content."""
+        if self.assignment_store is None:
+            return "reviews require an assignment inbox on this server"
+        assignment = self.assignment_store.get(
+            record.get("reviewer_public_key", ""), record.get("content_key", "")
+        )
+        if assignment is None:
+            return "reviewer was not assigned this content"
+        if int(record.get("timestamp", 0)) > int(assignment.get("deadline", 0)):
+            return "review submitted after the assignment deadline"
+        return ""
+
     def _handle_get_attachments(self, msg: dict) -> dict:
         if self.attachment_store is None:
             return {"type": "attachments", "records": []}
@@ -542,6 +607,19 @@ class NamingServer:
             for record, signature in self.attachment_store.get_for(content_key)
         ]
         return {"type": "attachments", "records": entries}
+
+
+def _paginate(items: list, msg: dict) -> tuple[list, Optional[int]]:
+    """Slice ``items`` per the request's offset/limit. Returns (page, next)."""
+    try:
+        offset = max(0, int(msg.get("offset", 0)))
+        limit = int(msg.get("limit", DEFAULT_PAGE_SIZE))
+    except (TypeError, ValueError):
+        offset, limit = 0, DEFAULT_PAGE_SIZE
+    limit = min(max(1, limit), MAX_PAGE_SIZE)
+    page = items[offset : offset + limit]
+    next_offset = offset + limit if offset + limit < len(items) else None
+    return page, next_offset
 
 
 async def _send_error(stream: INetStream, message: str) -> None:
@@ -580,8 +658,30 @@ async def client_resolve(host: IHost, server_info: PeerInfo, uri: str) -> dict:
     return await _rpc(host, server_info, {"type": "resolve", "uri": uri})
 
 
+async def _rpc_all_pages(
+    host: IHost, server_info: PeerInfo, request: dict, max_pages: int = 1000
+) -> dict:
+    """Follow ``next_offset`` and merge every page's records into one response.
+
+    Servers that predate pagination return everything with no
+    ``next_offset``, which ends the loop after the first page.
+    """
+    records: list = []
+    offset: Optional[int] = 0
+    response: dict = {}
+    for _ in range(max_pages):
+        response = await _rpc(host, server_info, dict(request, offset=offset))
+        if response.get("type") == "error":
+            return response
+        records.extend(response.get("records") or [])
+        offset = response.get("next_offset")
+        if not isinstance(offset, int):
+            break
+    return dict(response, records=records, next_offset=None)
+
+
 async def client_list(host: IHost, server_info: PeerInfo) -> dict:
-    return await _rpc(host, server_info, {"type": "list"})
+    return await _rpc_all_pages(host, server_info, {"type": "list"})
 
 
 async def client_register_reviewer(
@@ -595,7 +695,7 @@ async def client_register_reviewer(
 
 
 async def client_list_reviewers(host: IHost, server_info: PeerInfo) -> dict:
-    return await _rpc(host, server_info, {"type": "list_reviewers"})
+    return await _rpc_all_pages(host, server_info, {"type": "list_reviewers"})
 
 
 async def client_post_assignment(
