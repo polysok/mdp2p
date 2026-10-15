@@ -86,28 +86,32 @@ async def run_peer(
     async with host.run(listen_addrs=listen), trio.open_nursery() as nursery:
         nursery.start_soon(host.get_peerstore().start_cleanup_task, 60)
 
-        async with AsyncExitStack() as stack:
-            if dht is not None:
-                await stack.enter_async_context(background_trio_service(dht))
+        # Cancel the nursery only once the stack has unwound. Cancelling it
+        # first made the stack's shutdown raise Cancelled, which replaced
+        # any exception from the caller's body and was then absorbed by
+        # this very scope: errors inside `async with run_peer()` vanished.
+        try:
+            async with AsyncExitStack() as stack:
+                if dht is not None:
+                    await stack.enter_async_context(background_trio_service(dht))
 
-            relay_transport = await build_circuit_stack(host, relay_mode, stack)
+                relay_transport = await build_circuit_stack(host, relay_mode, stack)
 
-            peer = Peer(
-                host,
-                data_dir=data_dir,
-                naming_info=naming_info,
-                pinstore_path=pinstore_path,
-                dht=dht,
-                relay_transport=relay_transport,
-            )
-            peer.attach()
-            await bootstrap_dht(host, dht, bootstrap_multiaddrs, logger)
-            await connect_relays(host, relay_multiaddrs, logger)
+                peer = Peer(
+                    host,
+                    data_dir=data_dir,
+                    naming_info=naming_info,
+                    pinstore_path=pinstore_path,
+                    dht=dht,
+                    relay_transport=relay_transport,
+                )
+                peer.attach()
+                await bootstrap_dht(host, dht, bootstrap_multiaddrs, logger)
+                await connect_relays(host, relay_multiaddrs, logger)
 
-            try:
                 yield peer
-            finally:
-                nursery.cancel_scope.cancel()
+        finally:
+            nursery.cancel_scope.cancel()
 
 
 async def link_peers_dht(*peers: Peer) -> None:
